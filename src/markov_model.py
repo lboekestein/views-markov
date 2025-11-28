@@ -43,7 +43,9 @@ class MarkovModel:
         self._markov_states = ["peace", "desc", "esc", "war"]
         self._index_columns = ["country_id", "month_id"] #TODO should also support pgm level?
         self._target = None
-        self._features = []
+        self._markov_target = None
+        self._state_features = None
+        self._fatalities_features = None
 
         # set random forest parameters
         # these are currently set to match the default parameters of the Ranger package in R,
@@ -77,17 +79,23 @@ class MarkovModel:
             data: pd.DataFrame,
             steps: int | list[int] | range,
             target: str,
+            markov_target: str,
+            state_features: Optional[list[str]] = None,
+            fatalities_features: Optional[list[str]] = None,
             verbose: bool = True
         ) -> None:
         """
         Fit the Markov model to the provided data.
-        Data must contain only the target column and feature columns, and have a multi-index with levels country_id and month_id.
+        Data must contain only the target column, markov target column and feature columns, 
+        and have a multi-index with levels country_id and month_id.
         Predictions are stored in the self._models attribute.
 
         Args:
             data (pd.DataFrame): Input data containing features and target column.
             steps (int | list[int] | range): Steps ahead to fit the model for.
             target (str): Name of the target column in the data.
+            markov_target (str): Name of the target column to compute Markov states from (should represent number of fatalities).
+
             verbose (bool, optional): Whether to print progress messages. Defaults to True.
         """
 
@@ -97,11 +105,18 @@ class MarkovModel:
         # format steps to list
         steps_list = self._get_list_of_steps(steps)
 
+        # set target
+        self._target = target
+        self._markov_target = markov_target
+
         # set features
-        self._features = data.columns.drop(target).tolist()
+        all_features = data.columns.drop([self._target, self._markov_target]).tolist()
+
+        self._state_features = all_features if state_features is None else state_features
+        self._fatalities_features = all_features if fatalities_features is None else fatalities_features
 
         # add markov states to data
-        data = self._add_markov_states(data, target)
+        data = self._add_markov_states(data, markov_target)
 
         # fit markov state model
         self._models["state"] = {}
@@ -123,7 +138,6 @@ class MarkovModel:
 
         # set fitted flag
         self._is_fitted = True
-        self._target = target
 
 
     def predict(
@@ -142,7 +156,7 @@ class MarkovModel:
             verbose (bool, optional): Whether to print progress messages. Defaults to True.
         """
 
-        if not self._is_fitted or not self._target:
+        if not self._is_fitted or not self._target or not self._markov_target:
             raise ValueError("Model is not yet fitted. Cannot predict")
                 
         # format steps to list
@@ -152,7 +166,7 @@ class MarkovModel:
         self._check_if_steps_trained(steps_list)
 
         # add markov states to data
-        data = self._add_markov_states(data, target=self._target)
+        data = self._add_markov_states(data, target=self._markov_target)
 
         # predict for all given steps
         predictions = {}
@@ -235,7 +249,7 @@ class MarkovModel:
             state_subset = train_data[train_data["markov_state"] == state].drop(columns="markov_state").dropna()
 
             # prepare training data
-            X_train = state_subset[self._features]
+            X_train = state_subset[self._state_features]
             y_train = state_subset["markov_state_target"]
 
             # initialize random forest classifier
@@ -290,7 +304,7 @@ class MarkovModel:
 
             state_subset = train_data[train_data["markov_state"] == state].dropna()
 
-            X_train = state_subset[self._features]
+            X_train = state_subset[self._fatalities_features]
             y_train = state_subset["fatalities_target_month"]
 
             rf_reg = RandomForestRegressor(**self._rf_reg_params)
@@ -332,8 +346,8 @@ class MarkovModel:
                 range(self._test_start, self._test_end + 1))
         ].copy().dropna()
 
-        # drop non-feature columns
-        X_test = test_data[self._features]
+        X_test_state = test_data[self._state_features]
+        X_test_fatalities = test_data[self._fatalities_features]
 
         # retrieve models for given step
         state_models = self._models["state"][step]
@@ -345,26 +359,28 @@ class MarkovModel:
 
         # iterate over each possible starting state
         for start_state in self._markov_states:
+
+            
             
             # 1) predict probability of markov states in target month given current state
-            state_probs = state_models[start_state].predict_proba(X_test)
+            state_probs = state_models[start_state].predict_proba(X_test_state)
             
             # add to results
             state_probabilities.append(
                 pd.DataFrame(state_probs, 
                             columns=[f"p_{next}_c_{start_state}" 
                                     for next in state_models[start_state].classes_], 
-                            index=X_test.index))
+                            index=X_test_state.index))
 
             # 2) predict fatalities in target month given current state (only for esc and war)
             if start_state in ["esc", "war"]:
 
                 # predict fatalities given start state
-                fatalities_preds = fatalities_models[start_state].predict(X_test)
+                fatalities_preds = fatalities_models[start_state].predict(X_test_fatalities)
 
                 # add to results
                 predicted_fatalities.append(pd.Series(fatalities_preds, 
-                                                    index=X_test.index, 
+                                                    index=X_test_fatalities.index, 
                                                     name=f"predicted_fatalities_c_{start_state}"))
 
         # Concatenate all start-state probability tables horizontally
@@ -434,7 +450,8 @@ class MarkovModel:
         ].copy().dropna()
 
         # drop non-feature columns
-        X_test = test_data[self._features]
+        X_test_state = test_data[self._state_features]
+        X_test_fatalities = test_data[self._fatalities_features]
 
         # retrieve models for given step
         state_models = self._models["state"][1]
@@ -448,24 +465,24 @@ class MarkovModel:
         for start_state in self._markov_states:
             
             # 1) predict probability of markov states in target month given current state
-            state_probs = state_models[start_state].predict_proba(X_test)
+            state_probs = state_models[start_state].predict_proba(X_test_state)
             
             # add to results
             state_probabilities.append(
                 pd.DataFrame(state_probs, 
                             columns=[f"p_{next}_c_{start_state}" 
                                     for next in state_models[start_state].classes_], 
-                            index=X_test.index))
+                            index=X_test_state.index))
 
             # 2) predict fatalities in target month given current state (only for esc and war)
             if start_state in ["esc", "war"]:
 
                 # predict fatalities given start state
-                fatalities_preds = fatalities_models[start_state].predict(X_test)
+                fatalities_preds = fatalities_models[start_state].predict(X_test_fatalities)
 
                 # add to results
                 predicted_fatalities.append(pd.Series(fatalities_preds, 
-                                                    index=X_test.index, 
+                                                    index=X_test_fatalities.index, 
                                                     name=f"predicted_fatalities_c_{start_state}"))
 
         # Concatenate all start-state probability tables horizontally
