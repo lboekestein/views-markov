@@ -7,7 +7,7 @@ from pandas._libs.missing import NAType
 
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
-
+ 
 class MarkovModel:
 
     def __init__(
@@ -16,7 +16,8 @@ class MarkovModel:
             markov_method: str = "direct",
             rf_class_params: Optional[Dict] = None,
             rf_reg_params: Optional[Dict] = None,
-            random_state: Optional[int] = 42
+            random_state: Optional[int] = 42,
+            n_jobs: Optional[int] = -1
         ):
         """
         A Markov prediction model for forecasting fatalities.
@@ -31,6 +32,7 @@ class MarkovModel:
             rf_class_params (Optional[Dict], optional): Parameters for Random Forest Classifier. Defaults to None.
             rf_reg_params (Optional[Dict], optional): Parameters for Random Forest Regressor. Defaults to None.
             random_state (Optional[int], optional): Random state for reproducibility. Defaults to 42.
+            n_jobs (Optional[int], optional): Number of jobs to run in parallel. Defaults to -1.
         """
 
         self._train_start, self._train_end = partitioner_dict["train"]
@@ -47,31 +49,11 @@ class MarkovModel:
         self._state_features = None
         self._fatalities_features = None
 
-        # set random forest parameters
-        # these are currently set to match the default parameters of the Ranger package in R,
-        # where not already aligned with the default parameters of Sci-kit-learn
-        # see https://cran.r-project.org/web/packages/ranger/ranger.pdf
-        default_rf_class_params = {
-            "n_estimators": 500,
-            "random_state": self._random_state,
-            "n_jobs": -1
-        }
-        default_rf_reg_params = {
-            "n_estimators": 500,
-            "max_features": "sqrt",
-            "min_samples_leaf": 5,
-            "random_state": self._random_state,
-            "n_jobs": -1
-        }
-
-        # update with user provided parameters
-        if rf_class_params is not None:
-            default_rf_class_params.update(rf_class_params)
-        if rf_reg_params is not None:
-            default_rf_reg_params.update(rf_reg_params)
-
-        self._rf_class_params = default_rf_class_params
-        self._rf_reg_params = default_rf_reg_params
+        self._set_model_params(
+            rf_class_params,
+            rf_reg_params,
+            n_jobs
+        )
 
 
     def fit(
@@ -588,6 +570,48 @@ class MarkovModel:
 
         return data
     
+
+    def _set_model_params(
+            self,
+            rf_class_params: Optional[Dict],
+            rf_reg_params: Optional[Dict],
+            n_jobs: Optional[int]
+        ) -> None:
+        """
+        Set the Random Forest model parameters, using defaults if none are provided.
+        These are currently set to match the default parameters of the Ranger package in R,
+        where not already aligned with the default parameters of Sci-kit-learn.
+        See https://cran.r-project.org/web/packages/ranger/ranger.pdf
+
+        Args:
+            rf_class_params (Optional[Dict]): Parameters for Random Forest Classifier.
+            rf_reg_params (Optional[Dict]): Parameters for Random Forest Regressor.
+            n_jobs (Optional[int]): Number of jobs to run in parallel.
+        """
+
+        # default parameters
+        default_rf_class_params = {
+            "n_estimators": 500,
+            "random_state": self._random_state,
+            "n_jobs": n_jobs
+        }
+        default_rf_reg_params = {
+            "n_estimators": 500,
+            "max_features": "sqrt",
+            "min_samples_leaf": 5,
+            "random_state": self._random_state,
+            "n_jobs": n_jobs
+        }
+
+        # update with user provided parameters
+        if rf_class_params is not None:
+            default_rf_class_params.update(rf_class_params)
+        if rf_reg_params is not None:
+            default_rf_reg_params.update(rf_reg_params)
+
+        self._rf_class_params = default_rf_class_params
+        self._rf_reg_params = default_rf_reg_params
+
 
     def _verify_input_data(
             self,
