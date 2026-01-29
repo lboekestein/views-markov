@@ -119,6 +119,8 @@ class MarkovModel:
         # fit fatality model
         self._fit_fatality_model(data.copy(), target, verbose)
 
+        breakpoint()
+
         # set fitted flag
         self._is_fitted = True
 
@@ -343,8 +345,6 @@ class MarkovModel:
         # iterate over each possible starting state
         for start_state in self._markov_states:
 
-            
-            
             # 1) predict probability of markov states in target month given current state
             state_probs = state_models[start_state].predict_proba(X_test_state)
             
@@ -666,7 +666,8 @@ class MarkovModel:
     def _get_weighted_fatalities(self, row: pd.Series) -> float:
         """
         Compute the weighted fatalities for a given row based on Markov state probabilities.
-        
+        TODO: This should be vectorized for performance.
+
         Args:
             row (pd.Series): A row of the dataframe containing probabilities and predicted fatalities.
         Returns:

@@ -1,3 +1,3 @@
-data/*
+sandbox/data/*
 .DS_Store
-__pycache__/
+sandbox/__pycache__/
