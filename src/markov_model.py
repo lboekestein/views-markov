@@ -46,8 +46,9 @@ class MarkovModel:
         self._index_columns = ["country_id", "month_id"] #TODO should also support pgm level?
         self._target = None
         self._markov_target = None
-        self._state_features = None
-        self._fatalities_features = None
+
+        self._state_features: list[str] = []
+        self._fatalities_features: list[str] = []
 
         self._set_model_params(
             rf_class_params,
