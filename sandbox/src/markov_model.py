@@ -14,6 +14,7 @@ class MarkovModel:
             self, 
             partitioner_dict: Dict[str, Tuple[int, int]],
             markov_method: str = "direct",
+            regression_method: str = "single",
             rf_class_params: Optional[Dict] = None,
             rf_reg_params: Optional[Dict] = None,
             random_state: Optional[int] = 42,
@@ -29,6 +30,10 @@ class MarkovModel:
                 When "direct", the model predicts the markov state of the target month directly for any step size.
                 When "transition", the model computes the transition matrix between states and uses it to forecast multiple steps ahead.
                 Defaults to "direct".
+            regression_method (str, optional): Regression method to use. Options are "single" or "multi". 
+                When "single", the model uses a single regression model for all steps.
+                When "multi", the model uses separate regression models for each step.
+                Defaults to "single".
             rf_class_params (Optional[Dict], optional): Parameters for Random Forest Classifier. Defaults to None.
             rf_reg_params (Optional[Dict], optional): Parameters for Random Forest Regressor. Defaults to None.
             random_state (Optional[int], optional): Random state for reproducibility. Defaults to 42.
@@ -37,7 +42,9 @@ class MarkovModel:
 
         self._train_start, self._train_end = partitioner_dict["train"]
         self._test_start, self._test_end = partitioner_dict["test"]
+
         self._markov_method = markov_method
+        self._regression_method = regression_method
 
         self._random_state = random_state
         self._models = {}
@@ -50,6 +57,12 @@ class MarkovModel:
         self._state_features: list[str] = []
         self._fatalities_features: list[str] = []
 
+        # verify input parameters
+        self._verify_class_input_data(
+            self._markov_method, self._regression_method
+        )
+
+        # set model parameters
         self._set_model_params(
             rf_class_params,
             rf_reg_params,
@@ -117,9 +130,15 @@ class MarkovModel:
             print("\nFinished fitting Random Forest Classifiers for all Markov states.", flush=True)
 
         # fit fatality model
-        self._fit_fatality_model(data.copy(), target, verbose)
+        self._models["fatalities"] = {}
+        if self._regression_method == "single":
+            self._fit_fatality_model(data.copy(), self._target, step = 1, verbose = verbose)
+        elif self._regression_method == "multi":
+             for step in steps_list:
+                self._fit_fatality_model(data.copy(), self._target, step, verbose)
 
-        breakpoint()
+        if verbose:
+            print(f"\nFinished fitting Random Forest Regressors for all Markov states.", flush=True)
 
         # set fitted flag
         self._is_fitted = True
@@ -254,24 +273,26 @@ class MarkovModel:
             self,
             data: pd.DataFrame,
             target: str,
+            step: int,
             verbose: bool = True
         ):
         """
         Fit the fatality-prediction model.
-        Stores the fitted models in self._models["fatalities"].
+        Stores the fitted models in self._models["fatalities"][step].
 
         Args:
             data (pd.DataFrame): The dataset.
             target (str): The target column name. This is used to compute markov states
+            step (int): The prediction step.
             verbose (bool, optional): Whether to print progress messages. Defaults to True.
         """
 
         # add target column
-        data["fatalities_target_month"] = data.sort_index(level="month_id").groupby(level="country_id")[target].shift(-1)
+        data["fatalities_target_month"] = data.sort_index(level="month_id").groupby(level="country_id")[target].shift(-step)
    
         # add target_month_id column
         data = data.reset_index()
-        data["target_month_id"] = data["month_id"] + 1
+        data["target_month_id"] = data["month_id"] + step
         data.set_index(["country_id", "month_id"], inplace=True)
 
         # filter data to training period
@@ -285,7 +306,7 @@ class MarkovModel:
         for state in ["esc", "war"]:
 
             if verbose:
-                print(f"Fitting Random Forest Regressor for state: {state}" + " " * 20, flush=True, end="\r")
+                print(f"Fitting Random Forest Regressor for state: {state} and step: {step}" + " " * 20, flush=True, end="\r")
 
             state_subset = train_data[train_data["markov_state"] == state].dropna()
 
@@ -298,10 +319,7 @@ class MarkovModel:
 
             rf_reg_models[state] = rf_reg
 
-        self._models["fatalities"] = rf_reg_models
-
-        if verbose:
-            print("\nFinished fitting Random Forest Regressors for all Markov states.", flush=True)
+        self._models["fatalities"][step] = rf_reg_models
 
 
     def _predict_directly(
@@ -336,7 +354,6 @@ class MarkovModel:
 
         # retrieve models for given step
         state_models = self._models["state"][step]
-        fatalities_models = self._models["fatalities"]
 
         # Initialize lists to hold results
         state_probabilities = []
@@ -358,8 +375,15 @@ class MarkovModel:
             # 2) predict fatalities in target month given current state (only for esc and war)
             if start_state in ["esc", "war"]:
 
+                if self._regression_method == "single":
+                    fatalities_model = self._models["fatalities"][1][start_state]
+                elif self._regression_method == "multi":
+                    fatalities_model = self._models["fatalities"][step][start_state]
+                else:
+                    raise ValueError(f"Invalid regression method: {self._regression_method}")
+
                 # predict fatalities given start state
-                fatalities_preds = fatalities_models[start_state].predict(X_test_fatalities)
+                fatalities_preds = fatalities_model.predict(X_test_fatalities)
 
                 # add to results
                 predicted_fatalities.append(pd.Series(fatalities_preds, 
@@ -438,7 +462,6 @@ class MarkovModel:
 
         # retrieve models for given step
         state_models = self._models["state"][1]
-        fatalities_models = self._models["fatalities"]
 
         # Initialize lists to hold results
         state_probabilities = []
@@ -460,8 +483,15 @@ class MarkovModel:
             # 2) predict fatalities in target month given current state (only for esc and war)
             if start_state in ["esc", "war"]:
 
+                if self._regression_method == "single":
+                    fatalities_model = self._models["fatalities"][1][start_state]
+                elif self._regression_method == "multi":
+                    fatalities_model = self._models["fatalities"][step][start_state]
+                else:
+                    raise ValueError(f"Invalid regression method: {self._regression_method}")
+
                 # predict fatalities given start state
-                fatalities_preds = fatalities_models[start_state].predict(X_test_fatalities)
+                fatalities_preds = fatalities_model.predict(X_test_fatalities)
 
                 # add to results
                 predicted_fatalities.append(pd.Series(fatalities_preds, 
@@ -531,8 +561,7 @@ class MarkovModel:
 
         return test_data_full
 
-  
-    
+      
     def _add_markov_states(
             self,
             data: pd.DataFrame,
@@ -637,6 +666,28 @@ class MarkovModel:
         if target not in data.columns:
             raise ValueError(f"Target column '{target}' not found in data columns.")
         
+    
+    def _verify_class_input_data(
+            self,
+            markov_method: str,
+            regression_method: str
+        ):
+        """
+        Verify that the provided markov_method and regression_method are valid.
+
+        Args:
+            markov_method (str): The Markov method to verify.
+            regression_method (str): The regression method to verify.  
+        Raises:
+            ValueError: If markov_method or regression_method are not valid options.
+        """
+        valid_markov_methods = ["direct", "transition"]
+        valid_regression_methods = ["single", "multi"]
+        if markov_method not in valid_markov_methods:
+            raise ValueError(f"Invalid markov_method: {markov_method}. Valid options are: {valid_markov_methods}")
+        if regression_method not in valid_regression_methods:
+            raise ValueError(f"Invalid regression_method: {regression_method}. Valid options are: {valid_regression_methods}")
+        
 
     def _check_if_steps_trained(
             self,
@@ -657,10 +708,16 @@ class MarkovModel:
             for step in steps:
                 if step not in trained_steps:
                     raise ValueError(f"Model has not been trained for step {step}. Please fit the model for this step before predicting.")
-                
-        if self._markov_method == "transition":
+        elif self._markov_method == "transition":
             if 1 not in trained_steps:
                 raise ValueError("Model has not been trained for step 1 required for transition method. Please fit the model before predicting.")
+        if self._regression_method == "multi":
+            for step in steps:
+                if step not in self._models["fatalities"].keys():
+                    raise ValueError(f"Fatality model has not been trained for step {step}. Please fit the model for this step before predicting.")
+        elif self._regression_method == "single":
+            if 1 not in self._models["fatalities"].keys():
+                raise ValueError("Fatality model has not been trained for step 1 required for single regression method. Please fit the model before predicting.")
 
     
     def _get_weighted_fatalities(self, row: pd.Series) -> float:

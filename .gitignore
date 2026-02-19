@@ -1,6 +1,7 @@
 sandbox/data/*
 .DS_Store
 sandbox/__pycache__/
+sandbox/model_artifacts/*
 sandbox/src/__pycache__/
 sandbox/r_version/old_pipeline_version/__pycache__/
 sandbox/r_version/old_pipeline_version/results/
