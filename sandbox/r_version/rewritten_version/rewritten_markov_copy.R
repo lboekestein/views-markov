@@ -9,16 +9,21 @@ training_ids <- 121:408
 test_ids <- 409:456
 ## Load data
 
-cm <- arrow::read_parquet('data/testdataset.parquet') %>%
-  select(-gleditsch_ward, -ln_ged_sb_dep, -ged_sb)
+# OLD DATA
+#cm <- arrow::read_parquet('data/testdataset.parquet') %>%
+#  select(-gleditsch_ward, -ln_ged_sb_dep, -ged_sb)
+
+# NEW DATA
+cm <- arrow::read_parquet('views-markov/sandbox/data/david_data.parquet') %>%
+  select(-gleditsch_ward)
 
 
 markov_fatalities_run <- function(
-  cm,
-  steps,
-  training_ids,
-  test_ids,
-  method = c('direct', 'transition_matrix')
+    cm,
+    steps,
+    training_ids,
+    test_ids,
+    method = c('direct', 'transition_matrix')
 ) {
   cm <- cm %>%
     group_by(country_id) %>%
@@ -44,7 +49,7 @@ markov_fatalities_run <- function(
     ) %>%
     ungroup() %>%
     na.omit()
-
+  
   if (method == 'direct') {
     cm <- cm %>%
       mutate(
@@ -65,12 +70,12 @@ markov_fatalities_run <- function(
       ungroup() %>%
       na.omit()
   }
-
+  
   cm_train <- cm %>%
     filter(target_month_id %in% training_ids)
   cm_test <- cm %>%
     filter(target_month_id %in% test_ids)
-
+  
   rf_regression_models <- cm_train %>%
     filter(!(target_state_rf %in% c('peace', 'deescalation'))) %>%
     group_by(target_state_rf) %>%
@@ -93,7 +98,7 @@ markov_fatalities_run <- function(
         state = unique(.x$target_state)
       )
     )
-
+  
   rf_point_predictions <- foreach(m = 1:2, .final = bind_cols) %do%
     {
       pp <- predict(
@@ -110,9 +115,19 @@ markov_fatalities_run <- function(
             -target_sb_rf
           )
       )$predictions
-      tibble(!!paste0('pp_', rf_regression_models[[m]]$state) := pp)
-    }
+      
+      state_name <- as.character(rf_regression_models[[m]]$state)  # convert factor → character
+      
+      print(state_name)
+      
+      state_name <- state_name[1]  # take the first if multiple
+      
+      print(state_name)
+      
+      tibble(!!paste0('pp_', state_name) := pp)
 
+    }
+  
   rf_transition_models <- cm_train %>%
     group_by(markov_state) %>%
     group_split() %>%
@@ -135,7 +150,7 @@ markov_fatalities_run <- function(
         state = unique(.x$markov_state)
       )
     )
-
+  
   state_probs <- foreach(m = 1:4) %do%
     {
       pr <- predict(
@@ -176,14 +191,14 @@ markov_fatalities_run <- function(
         mutate(origin_state = rf_transition_models[[m]]$state, .before = 1)
       pr
     }
-
+  
   transition_probabilities <- state_probs_to_transition_probabilities(
     state_probs,
     cm_test,
     steps = steps,
     method = method
   )
-
+  
   results <- bind_cols(
     cm_test %>%
       select(country_id, month_id, markov_state, target_sb, target_state),
@@ -197,20 +212,20 @@ markov_fatalities_run <- function(
       method = method,
       steps = steps
     )
-
+  
   return(results)
 }
 
 state_probs_to_transition_probabilities <- function(
-  state_probs,
-  cm_test,
-  steps = NULL,
-  method = c('direct', 'transition_matrix')
+    state_probs,
+    cm_test,
+    steps = NULL,
+    method = c('direct', 'transition_matrix')
 ) {
   states <- c('peace', 'deescalation', 'escalation', 'conflict')
   n_states <- length(states)
   n_obs <- nrow(state_probs[[1]])
-
+  
   transition_probabilities <- foreach(i = 1:n_obs, .final = bind_rows) %do%
     {
       tm <- state_probs %>%
@@ -244,7 +259,7 @@ registerDoParallel(cores = 7)
 
 tictoc::tic()
 test1 <- foreach(s = 1:36) %:%
-  foreach(m = c('direct', 'transition_matrix')) %dopar%
+  foreach(m = c('direct')) %dopar% #, 'transition_matrix'
   {
     cat('Running steps =', s, 'method =', m, '\n')
     markov_fatalities_run(
@@ -257,4 +272,4 @@ test1 <- foreach(s = 1:36) %:%
   }
 tictoc::toc()
 
-saveRDS(test1, 'markov_fatalities_views_test.rds')
+saveRDS(test1, 'r_version/results/markov_fatalities_views_test.rds')

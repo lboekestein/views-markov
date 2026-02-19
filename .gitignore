@@ -1,3 +1,7 @@
 sandbox/data/*
 .DS_Store
 sandbox/__pycache__/
+sandbox/r_version/old_pipeline_version/__pycache__/
+sandbox/r_version/old_pipeline_version/results/
+sandbox/r_version/old_pipeline_version/tmps/
+sandbox/r_version/rewritten_version/results/

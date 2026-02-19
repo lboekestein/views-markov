@@ -1,0 +1,42 @@
+---
+title: "ConvertRDS"
+output: html_document
+date: "2026-02-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Combine predictions from rewritten R code into one csv file
+
+## Import RDS file
+
+```{r cars}
+all_predictions <- readRDS("/Users/views/Documents/VIEWS/Repos/views-markov/sandbox/r_version/rewritten_version/results/markov_fatalities_views_test.rds")
+```
+
+## Combine into one dataframe
+
+```{r}
+# Steps
+steps <- 1:36
+
+# Create a list of dataframes, one per step
+dfs <- map(steps, function(step) {
+  all_predictions[[step]][[1]] %>%
+    select(country_id, month_id, markov_point_prediction, steps) %>%
+    mutate(target_month_id = month_id + steps) %>%
+    rename(!!paste0("pred_step_", step) := markov_point_prediction) %>%
+    select(country_id, target_month_id, !!paste0("pred_step_", step))
+})
+
+# Merge all dataframes by country_id and target_month_id
+merged_data <- reduce(dfs, full_join, by = c("country_id", "target_month_id"))
+```
+
+And then write to csv
+
+```{r}
+write_csv(merged_data, "../../data/merged_predictions.csv")
+```

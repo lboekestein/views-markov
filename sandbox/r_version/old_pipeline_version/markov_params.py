@@ -8,9 +8,11 @@ steps = [*range(1, 36+1, 1)] # Which steps to train and predict for
 
 calib_partitioner_dict = {"train":(121,408),"predict":(409,456)} # Calib partition
 test_partitioner_dict = {"train":(121,456),"predict":(457,504)} # Test partition
-# custom_partitioner_dict = {"train":(121,456),"predict":(457,504)} # Custom partition to set your own train and predict ranges
 
-model_type = 'both' # Either 'rf', 'glm', or 'both'
-predict_type = 'test' # 'future', 'test', 'calib', or 'custom'
+
+custom_partitioner_dict = {"train":(121,408),"predict":(409,456)} # Custom partition to set your own train and predict ranges
+
+model_type = 'rf' # Either 'rf', 'glm', or 'both'
+predict_type = 'custom' # 'future', 'test', 'calib', or 'custom'
 
 cleenup = False # should all temporary files and tmps folder be removed at the end?

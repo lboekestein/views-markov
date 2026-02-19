@@ -33,7 +33,8 @@ def compute_markov(partitioner_dict, EndOfHistory, depvar, predict_type, model_t
     pd.DataFrame(pd.Series(pars,dtype='string')).transpose().to_parquet('tmps/tmp_pars.parquet')
 
 
-    subprocess.call(["Rscript","../Tools/new_markov/omm_fatalities_flex_pywrap.R"])
+    #subprocess.call(["Rscript","../Tools/new_markov/omm_fatalities_flex_pywrap.R"])
+    subprocess.call(["Rscript","omm_fatalities_flex_pywrap.R"])
 
 
     if predict_type == 'future':
