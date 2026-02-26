@@ -22,13 +22,26 @@ class MarkovStateModel:
             rf_class_params: Optional[dict[str, Any]] = None,
             random_state: int = 42,
             n_jobs: int = -1,
-    ):
+        ):
+        """
+        A Markov state prediction model that predicts the probabilities of the Markov state of a future month,
+        given the current month's state and a set of features, for a given step size.
+
+        Args:
+            step (int): The number of months ahead to predict the Markov state for.
+            partitioner_dict (dict[str, tuple[int, int]]): A dictionary with keys "train" and "test", 
+                each mapping to a tuple of (start_month_id, end_month_id) for the respective data partitions.
+            rf_class_params (Optional[dict[str, Any]], optional): Parameters for the Random Forest Classifier. Defaults to None.
+            random_state (int, optional): Random state for reproducibility. Defaults to 42.
+            n_jobs (int, optional): Number of jobs to run in parallel. Defaults to -1.
+        """
         
         self.train_start, self.train_end = partitioner_dict["train"]
         self.test_start, self.test_end = partitioner_dict["test"]
-        self.random_state = random_state
         self.step = step
-
+        
+        self._random_state = random_state
+        self._n_jobs = n_jobs
         self._rf_class_params = rf_class_params if rf_class_params is not None else {}
 
         self.models: dict[str, RandomForestClassifier] = {}
@@ -95,7 +108,11 @@ class MarkovStateModel:
             y_train = state_subset["markov_state_target"]
 
             # initialize random forest classifier
-            rf_class = RandomForestClassifier(**self._rf_class_params)
+            rf_class = RandomForestClassifier(
+                random_state = self._random_state,
+                n_jobs = self._n_jobs,
+                **self._rf_class_params
+            )
 
             # fit model
             rf_class.fit(X_train, y_train)
@@ -108,14 +125,47 @@ class MarkovStateModel:
         return self
 
 
-    def predict(self, data: pd.DataFrame, feature_cols: list[str]) -> np.ndarray:
+    def predict(
+            self, 
+            data: pd.DataFrame, 
+            start_state: str
+        ) -> pd.DataFrame:
+        """
+        Predict the probabilities of the Markov state of a future month, given the current month's state and a set of features.
+        
+        Args:
+            data (pd.DataFrame): Input data containing features and target column.
+                The data must contain a multi-index with levels "country_id" and "month_id", and be sorted by these levels.
+                The data must also contain the features specified in self._markov_features.
+            start_state (str): The Markov state of the current month to predict from. Must be one of the states in self._markov_states.
 
-        #self._model.predict()
-        ...    
+        Returns:
+            pd.DataFrame: A dataframe containing the predicted probabilities of the Markov state of the target month, given the current month's state and features.
+                The dataframe has a multi-index with levels "country_id" and "month_id", 
+                and columns for the predicted probabilities of each target state given the starting state, named in the format "p_{target}\_c\_{start_state}".
+        """
 
+        model = self.models[start_state]
+
+        X_test = data[self._markov_features]
+
+        predictions = model.predict_proba(X_test)
+
+        probabilities = pd.DataFrame(
+            predictions,
+            columns=[f"p_{next}_c_{start_state}" for next in model.classes_],
+            index=X_test.index
+        )
+
+        return probabilities
         
 
 class MarkovFatalityModel:
+    """
+    A Markov fatality prediction model that predicts the number of fatalities in a future month, 
+    given the predicted month's state and a set of features, for a given step size.
+    """
+
 
     def __init__(
             self,
@@ -125,12 +175,25 @@ class MarkovFatalityModel:
             random_state: int = 42,
             n_jobs: int = -1
         ):
+        """
+        A Markov fatality prediction model that predicts the number of fatalities in a future month,
+        given the predicted month's state and a set of features, for a given step size.
+
+        Args:
+            step (int): The number of months ahead to predict the number of fatalities for.
+            partitioner_dict (dict[str, tuple[int, int]]): A dictionary with keys "train" and "test", 
+                each mapping to a tuple of (start_month_id, end_month_id) for the respective data partitions.
+            rf_reg_params (Optional[dict[str, Any]], optional): Parameters for the Random Forest Regressor. Defaults to None.
+            random_state (int, optional): Random state for reproducibility. Defaults to 42.
+            n_jobs (int, optional): Number of jobs to run in parallel. Defaults to -1.
+        """
 
         self.train_start, self.train_end = partitioner_dict["train"]
         self.test_start, self.test_end = partitioner_dict["test"]
-        self.random_state = random_state
         self.step = step
 
+        self._random_state = random_state
+        self._n_jobs = n_jobs
         self._rf_reg_params = rf_reg_params if rf_reg_params is not None else {}
 
         self.models: dict[str, RandomForestRegressor] = {}
@@ -139,7 +202,6 @@ class MarkovFatalityModel:
         self._features: list[str] = []
         self._target: str = ""
         self._n_samples: int = 0
-        ...
 
 
     def fit(
@@ -148,6 +210,20 @@ class MarkovFatalityModel:
             target_column: str,
             features: list[str]
         ) -> "MarkovFatalityModel":
+        """
+        Fit the Markov fatality prediction model.
+        The model is fitted separately for each Markov state, using only the samples in that state as training data.
+        Given the definition of the Markov model, fatalities are only predicted for the "esc" and "war" states, so the model is only fitted for these states.
+
+        Args:
+            data (pd.DataFrame): Input data containing features and target column.
+                The data must contain a multi-index with levels "country_id" and "month_id", and be sorted by these levels.
+                The data must also contain a column with the Markov state, the target column specified in target_column, and the features specified in features.
+            target_column (str): Name of the column to use as the target variable (should represent number of fatalities).
+            features (list[str]): List of feature column names to use for predicting fatalities.
+        Returns:
+            MarkovFatalityModel: The fitted MarkovFatalityModel instance.
+        """
 
         data = data.copy()
 
@@ -176,7 +252,11 @@ class MarkovFatalityModel:
             X_train = state_subset[self._features]
             y_train = state_subset["fatalities_target_month"]
 
-            rf_reg = RandomForestRegressor(**self._rf_reg_params)
+            rf_reg = RandomForestRegressor(
+                random_state = self._random_state,
+                n_jobs = self._n_jobs,
+                **self._rf_reg_params
+            )
 
             rf_reg.fit(X_train, y_train)
 
@@ -186,17 +266,49 @@ class MarkovFatalityModel:
 
         return self
 
-    def predict(self, data: pd.DataFrame, feature_cols: list[str]) -> np.ndarray:
-        ...
+    def predict(
+            self, 
+            data: pd.DataFrame, 
+            start_state: str
+        ) -> pd.Series:
+        """
+        Predict the number of fatalities in the target month, given the predicted month's state and a set of features.
 
- 
+        Args:
+            data (pd.DataFrame): Input data containing features and target column.
+                The data must contain a multi-index with levels "country_id" and "month_id", and be sorted by these levels.
+                The data must also contain the features specified in self._features.
+            start_state (str): The Markov state of the predicted month to predict from. Must be one of "esc" or "war".
+        Returns:
+            pd.Series: A series containing the predicted number of fatalities in the target month, given the predicted month's state and features.
+                The series has a multi-index with levels "country_id" and "month_id", and name in the format "predicted_fatalities_c_{start_state}".
+        """
+
+        model = self.models[start_state]
+
+        X_test = data[self._features]
+        predictions = model.predict(X_test)
+
+        predictions = pd.Series(
+            predictions, 
+            index=X_test.index, 
+            name=f"predicted_fatalities_c_{start_state}"
+        )
+
+        return predictions
+        
+
 class MarkovModel:
+    """
+    A Markov prediction model for forecasting fatalities
+    """
 
     def __init__(
             self, 
             partitioner_dict: dict[str, tuple[int, int]],
             markov_method: Literal["direct", "transition"] = "direct",
             regression_method: Literal["single", "multi"] = "single",
+            markov_threshold: int = 0,
             random_state: int = 42,
             n_jobs: int = -1,
             rf_class_params: Optional[dict] = None,
@@ -231,15 +343,18 @@ class MarkovModel:
         self._partitioner_dict = partitioner_dict
         self._markov_method = markov_method
         self._regression_method = regression_method
-        self._rf_class_params = rf_class_params
+        self._markov_threshold = markov_threshold
+
         self._random_state = random_state
         self._n_jobs = n_jobs
+
+        self._rf_class_params = {}
+        self._rf_reg_params = {}
 
         # set sub-model parameters
         self._set_model_params(
             rf_class_params,
             rf_reg_params,
-            n_jobs
         )
 
         # set markov states and index columns
@@ -253,8 +368,8 @@ class MarkovModel:
         self._fatalities_features: list[str] = []
 
         # set attributes to store fitted models
-        self._state_models: dict[int, Any] = {}
-        self._fatality_models: dict[int, Any] = {}
+        self._state_models: dict[int, MarkovStateModel] = {}
+        self._fatality_models: dict[int, MarkovFatalityModel] = {}
         
         self._is_fitted: bool = False
 
@@ -273,8 +388,8 @@ class MarkovModel:
         Fit the Markov model to the provided data.
         Data must contain the target column, markov target column and feature columns, 
         and have a multi-index with levels country_id and month_id.
-        Predictions are stored in the self._models attribute.
-
+        Models are stored in the self._state_models and self._fatality_models attributes.
+        
         Args:
             data (pd.DataFrame): Input data containing features and target column.
             steps (int | list[int] | range): Steps ahead to fit the model for.
@@ -316,8 +431,16 @@ class MarkovModel:
         elif self._markov_method == "transition":
             markov_steps = [1]
 
+        if verbose:
+            print(f"Fitting Markov model using {self._markov_method} method and {self._regression_method} regression:")
+
         # fit markov_model for all steps
-        for step in tqdm(markov_steps, desc="Fitting Markov State Models"):
+        for step in tqdm(
+            markov_steps, 
+            desc=f"Fitting Markov State Models ({self._markov_method} method)",
+            disable=verbose is False
+        ):
+            
             state_model = MarkovStateModel(
                 step = step,
                 partitioner_dict = self._partitioner_dict,
@@ -340,7 +463,11 @@ class MarkovModel:
         elif self._regression_method == "multi":
             regression_steps = steps_list
 
-        for step in tqdm(regression_steps, desc="Fitting Fatality Models"):
+        for step in tqdm(
+            regression_steps, 
+            desc=f"Fitting Fatality Models ({self._regression_method} method)",
+            disable=verbose is False
+        ):
 
             fatality_model = MarkovFatalityModel(
                 step = step,
@@ -355,6 +482,9 @@ class MarkovModel:
                 features = self._fatalities_features
             )
             self._fatality_models[step] = fatality_model
+
+        if verbose:
+            print("\nFinished fitting Markov model.", flush=True)
 
         # set fitted flag
         self._is_fitted = True
@@ -378,7 +508,9 @@ class MarkovModel:
             verbose (bool, optional): Whether to print progress messages. Defaults to True.
         """
 
-        if not self._is_fitted or not self._target or not self._markov_target:
+        data = data.copy()
+
+        if not self._is_fitted:
             raise ValueError("Model is not yet fitted. Cannot predict")
                 
         # format steps to list
@@ -391,27 +523,14 @@ class MarkovModel:
         data = self._add_markov_states(data, target=self._markov_target)
 
         # predict for all given steps
-        predictions = {}
-        for step in steps_list:
-
-            if verbose:
-                print(f"Predicting step {step} using {self._markov_method} method." + " " * 20, flush=True, end="\r")
-
-            if self._markov_method == "transition":
+        predictions: dict[int, pd.DataFrame] = {}
+        for step in tqdm(steps_list, desc="Predicting steps", disable=verbose is False):
         
-                prediction_step = self._predict_transition(
-                    data.copy(),
-                    step
-                )
-                predictions[step] = prediction_step
-        
-            elif self._markov_method == "direct":
-            
-                prediction_step = self._predict_directly(
-                    data.copy(),
-                    step
-                )
-                predictions[step] = prediction_step
+            prediction_step = self._predict_step(
+                data,
+                step
+            )
+            predictions[step] = prediction_step
 
         combined_predictions = pd.concat(predictions.values(), axis=0)
 
@@ -427,9 +546,9 @@ class MarkovModel:
             print("\nFinished predicting for all steps.", flush=True)
 
         return combined_predictions
+    
 
-
-    def _predict_directly(
+    def _predict_step(
             self,
             data: pd.DataFrame,
             step: int,
@@ -445,60 +564,62 @@ class MarkovModel:
             pd.DataFrame: The predicted values.
         """
 
+        data = data.copy()
+
         # add target_month_id column
         data = data.reset_index()
         data["target_month_id"] = data.groupby("country_id")["month_id"].shift(-step)
         data.set_index(["country_id", "month_id"], inplace=True)
 
+        self._test_start, self._test_end = self._partitioner_dict["test"]
+
           # filter data to test period
         test_data = data.loc[
             data["target_month_id"].isin(
                 range(self._test_start, self._test_end + 1))
-        ].copy().dropna()
-
-        X_test_state = test_data[self._state_features]
-        X_test_fatalities = test_data[self._fatalities_features]
+        ].dropna()
 
         # retrieve models for given step
-        state_models = self._models["state"][step]
+        if self._markov_method == "transition":
+            state_model = self._state_models[1]
+        else:   # if self._markov_method == "direct"
+            state_model = self._state_models[step]
 
         # Initialize lists to hold results
-        state_probabilities = []
-        predicted_fatalities = []
+        state_probabilities: list[pd.DataFrame] = []
+        predicted_fatalities: list[pd.Series] = []
 
         # iterate over each possible starting state
         for start_state in self._markov_states:
 
-            # 1) predict probability of markov states in target month given current state
-            state_probs = state_models[start_state].predict_proba(X_test_state)
-            
-            # add to results
-            state_probabilities.append(
-                pd.DataFrame(state_probs, 
-                            columns=[f"p_{next}_c_{start_state}" 
-                                    for next in state_models[start_state].classes_], 
-                            index=X_test_state.index))
+            state_probs = state_model.predict(test_data, start_state=start_state)
 
-            # 2) predict fatalities in target month given current state (only for esc and war)
-            if start_state in ["esc", "war"]:
-
-                if self._regression_method == "single":
-                    fatalities_model = self._models["fatalities"][1][start_state]
-                elif self._regression_method == "multi":
-                    fatalities_model = self._models["fatalities"][step][start_state]
-                else:
-                    raise ValueError(f"Invalid regression method: {self._regression_method}")
-
-                # predict fatalities given start state
-                fatalities_preds = fatalities_model.predict(X_test_fatalities)
-
-                # add to results
-                predicted_fatalities.append(pd.Series(fatalities_preds, 
-                                                    index=X_test_fatalities.index, 
-                                                    name=f"predicted_fatalities_c_{start_state}"))
+            state_probabilities.append(state_probs)
 
         # Concatenate all start-state probability tables horizontally
         state_probabilities_df = pd.concat(state_probabilities, axis=1)
+
+        # ensure all required probability columns exist, if they don't, set to 0
+        # this is needed because not all states will have probabilities computed
+        # mainly a problem when predicting only one step ahead
+        for state in self._markov_states:
+            for starting_state in self._markov_states:
+                if f"p_{state}_c_{starting_state}" not in state_probabilities_df.columns:
+                    state_probabilities_df.loc[:, f"p_{state}_c_{starting_state}"] = 0
+
+        if self._regression_method == "multi":
+            fatalities_model = self._fatality_models[step]
+        else:     # if self._regression_method == "single":
+            fatalities_model = self._fatality_models[1]
+
+        # 2) predict fatalities in target month given current state (only for esc and war)
+        for start_state in ["esc", "war"]:
+    
+            # predict fatalities given start state
+            fatalities_preds = fatalities_model.predict(test_data, start_state=start_state)
+
+            # add to results
+            predicted_fatalities.append(fatalities_preds)
 
         # Concatenate all predicted fatalities tables horizontally
         predicted_fatalities_df = pd.concat(predicted_fatalities, axis=1)
@@ -508,14 +629,32 @@ class MarkovModel:
             test_data, state_probabilities_df, predicted_fatalities_df
             ], axis=1)
         
-        # ensure all required probability columns exist, if they don't, set to 0
-        # this is needed because not all states will have probabilities computed
-        # mainly a problem when predicting only one step ahead
-        for state in self._markov_states:
-            for starting_state in self._markov_states:
-                if f"p_{state}_c_{starting_state}" not in test_data_full.columns:
-                    test_data_full.loc[:, f"p_{state}_c_{starting_state}"] = 0
+        if self._markov_method == "transition":
+            
+            # extract all 16 columns for the transition matrix and reshape
+            n_states = len(self._markov_states)
+            cols = [f"p_{next}_c_{current}" for current in self._markov_states for next in self._markov_states]
 
+            # reshape to 3D array: (n_samples, n_states, n_states) 
+            P = test_data_full[cols].to_numpy().reshape(-1, n_states, n_states)
+
+            # compute transition matrices to the power of step
+            P_k = self._matrix_power(P, step)
+
+            # reshape back to columns of dataframe
+            df_Pk = pd.DataFrame(
+                P_k.reshape(-1, n_states * n_states),
+                columns=cols,
+                index=test_data_full.index
+            )
+
+            # merge with test data
+            test_data_full.drop(columns=cols, inplace=True)
+            test_data_full = test_data_full.merge(
+                df_Pk,
+                left_index=True,
+                right_index=True,
+            )
 
         # compute weighted fatalities
         # TODO currently this is a row-wise operation, slightly slow, can be optimized later if needed
@@ -537,145 +676,10 @@ class MarkovModel:
         return test_data_full
     
 
-    def _predict_transition(
-            self,
-            data: pd.DataFrame,
-            step: int,
-        ) -> pd.DataFrame:
-        """
-        Predict the target variable for a given test dataset and step using the transition method.
-
-        Args:
-            data (pd.DataFrame): The dataset.
-            step (int): The prediction step. 
-        Returns:
-            pd.DataFrame: The predicted values.
-        """
-
-        # add target_month_id column
-        data = data.reset_index()
-        data["target_month_id"] = data.groupby("country_id")["month_id"].shift(-step)
-        data.set_index(["country_id", "month_id"], inplace=True)
-
-        # filter data to test period
-        test_data = data.loc[
-            data["target_month_id"].isin(
-                range(self._test_start, self._test_end + 1))
-        ].copy().dropna()
-
-        # drop non-feature columns
-        X_test_state = test_data[self._state_features]
-        X_test_fatalities = test_data[self._fatalities_features]
-
-        # retrieve models for given step
-        state_models = self._models["state"][1]
-
-        # Initialize lists to hold results
-        state_probabilities = []
-        predicted_fatalities = []
-
-        # iterate over each possible starting state
-        for start_state in self._markov_states:
-            
-            # 1) predict probability of markov states in target month given current state
-            state_probs = state_models[start_state].predict_proba(X_test_state)
-            
-            # add to results
-            state_probabilities.append(
-                pd.DataFrame(state_probs, 
-                            columns=[f"p_{next}_c_{start_state}" 
-                                    for next in state_models[start_state].classes_], 
-                            index=X_test_state.index))
-
-            # 2) predict fatalities in target month given current state (only for esc and war)
-            if start_state in ["esc", "war"]:
-
-                if self._regression_method == "single":
-                    fatalities_model = self._models["fatalities"][1][start_state]
-                elif self._regression_method == "multi":
-                    fatalities_model = self._models["fatalities"][step][start_state]
-                else:
-                    raise ValueError(f"Invalid regression method: {self._regression_method}")
-
-                # predict fatalities given start state
-                fatalities_preds = fatalities_model.predict(X_test_fatalities)
-
-                # add to results
-                predicted_fatalities.append(pd.Series(fatalities_preds, 
-                                                    index=X_test_fatalities.index, 
-                                                    name=f"predicted_fatalities_c_{start_state}"))
-
-        # Concatenate all start-state probability tables horizontally
-        state_probabilities_df = pd.concat(state_probabilities, axis=1)
-
-        # Concatenate all predicted fatalities tables horizontally
-        predicted_fatalities_df = pd.concat(predicted_fatalities, axis=1)
-
-        # combine results with test data
-        test_data_full = pd.concat([
-            test_data, state_probabilities_df, predicted_fatalities_df
-            ], axis=1)
-
-        # ensure all required probability columns exist, if they don't, set to 0
-        # this is needed because not all states will have probabilities computed
-        # mainly a problem when predicting only one step ahead
-        for state in self._markov_states:
-            for starting_state in self._markov_states:
-                if f"p_{state}_c_{starting_state}" not in test_data_full.columns:
-                    test_data_full.loc[:, f"p_{state}_c_{starting_state}"] = 0
-
-        # extract all 16 columns for the transition matrix and reshape
-        n_states = len(self._markov_states)
-        cols = [f"p_{next}_c_{current}" for current in self._markov_states for next in self._markov_states]
-
-        # reshape to 3D array: (n_samples, n_states, n_states) 
-        P = test_data_full[cols].to_numpy().reshape(-1, n_states, n_states)
-
-        # compute transition matrices to the power of step
-        P_k = self._matrix_power(P, step)
-
-        # reshape back to columns of dataframe
-        df_Pk = pd.DataFrame(
-            P_k.reshape(-1, n_states * n_states),
-            columns=cols,
-            index=test_data_full.index
-        )
-
-        # merge with test data
-        test_data_full.drop(columns=cols, inplace=True)
-        test_data_full = test_data_full.merge(
-            df_Pk,
-            left_index=True,
-            right_index=True,
-        )
-
-        # compute weighted fatalities
-        # TODO currently this is a row-wise operation, slightly slow, can be optimized later if needed
-        test_data_full["predicted_fatalities"] = test_data_full.apply(self._get_weighted_fatalities, axis=1)
-        test_data_full["step"] = step
-
-        # drop rows where target_month_id is NA (due to shifting)
-        test_data_full = test_data_full.dropna(subset=["target_month_id"])
-
-        # return results
-        test_data_full = (
-            test_data_full
-            .reset_index()
-            .set_index(["country_id", "target_month_id"])
-            [["predicted_fatalities", "step"]]
-        )
-
-        return test_data_full
-
-      
-
-    
-
     def _set_model_params(
             self,
-            rf_class_params: Optional[Dict],
-            rf_reg_params: Optional[Dict],
-            n_jobs: Optional[int]
+            rf_class_params: Optional[Dict] = None,
+            rf_reg_params: Optional[Dict] = None,
         ) -> None:
         """
         Set the Random Forest model parameters, using defaults if none are provided.
@@ -688,21 +692,16 @@ class MarkovModel:
         Args:
             rf_class_params (Optional[Dict]): Parameters for Random Forest Classifier.
             rf_reg_params (Optional[Dict]): Parameters for Random Forest Regressor.
-            n_jobs (Optional[int]): Number of jobs to run in parallel.
         """
 
         # default parameters
         default_rf_class_params = {
             "n_estimators": 500,
-            "random_state": self._random_state,
-            "n_jobs": n_jobs
         }
         default_rf_reg_params = {
             "n_estimators": 500,
             "max_features": "sqrt",
             "min_samples_leaf": 5,
-            "random_state": self._random_state,
-            "n_jobs": n_jobs
         }
 
         # update with user provided parameters
@@ -804,21 +803,19 @@ class MarkovModel:
             ValueError: If the model has not been trained for any of the given steps.
         """
 
-        trained_steps = self._models["state"].keys()
-
         if self._markov_method == "direct":
             for step in steps:
-                if step not in trained_steps:
+                if step not in self._state_models.keys():
                     raise ValueError(f"Model has not been trained for step {step}. Please fit the model for this step before predicting.")
         elif self._markov_method == "transition":
-            if 1 not in trained_steps:
+            if 1 not in self._state_models.keys():
                 raise ValueError("Model has not been trained for step 1 required for transition method. Please fit the model before predicting.")
         if self._regression_method == "multi":
             for step in steps:
-                if step not in self._models["fatalities"].keys():
+                if step not in self._fatality_models.keys():
                     raise ValueError(f"Fatality model has not been trained for step {step}. Please fit the model for this step before predicting.")
         elif self._regression_method == "single":
-            if 1 not in self._models["fatalities"].keys():
+            if 1 not in self._fatality_models.keys():
                 raise ValueError("Fatality model has not been trained for step 1 required for single regression method. Please fit the model before predicting.")
 
     
@@ -846,6 +843,83 @@ class MarkovModel:
         )
 
         return weighted_fatalities
+    
+
+    def _add_markov_states(
+            self,
+            data: pd.DataFrame,
+            target: str,
+        ) -> pd.DataFrame:
+        """
+        Add Markov states to the data based on the target fatalities.
+
+        Args:
+            data (pd.DataFrame): Input data containing target column
+            target (str): Name of target_column
+        Returns:
+            pd.DataFrame: Data with an additional 'markov_state' column.
+        """
+
+        data = data.sort_index(level=["country_id", "month_id"])  # sort by country_id, month_id
+
+        # compute temporary t-1 of target
+        data[f"{target}_t_min_1"] = data.groupby(level="country_id")[target].shift(1)
+
+        # compute markov states
+        data["markov_state"] = data.apply(
+            lambda row: self._compute_markov_state(
+                row[target], 
+                row[f"{target}_t_min_1"], 
+                self._markov_threshold
+            ), 
+            axis=1
+        )
+
+        # drop temporary t-1 column
+        data.drop(columns=[f"{target}_t_min_1"], inplace=True)
+
+        return data
+
+
+    @staticmethod
+    def _compute_markov_state(
+            target_t: int, 
+            target_t_min_1: int, 
+            threshold: int = 0
+        ) -> Union[str, NAType]:
+        """
+        Compute the Markov state based on the number of target at time t and t-1.
+        Possible Markov states are:
+        - "peace": target_t <= threshold and target_t_min_1 <= threshold
+        - "desc": target_t <= threshold and target_t_min_1 > threshold
+        - "esc": target_t > threshold and target_t_min_1 <= threshold
+        - "war": target_t > threshold and target_t_min_1 > threshold
+        
+        Args:
+            target_t (int): Target at time t.
+            target_t_min_1 (int): Target at time t-1.
+            threshold (int, optional): Threshold for considering target. Defaults to 0.
+
+        Returns:
+            Union[str, NAType]: The Markov state as a string or pd.NA if not computable.
+        """
+
+        if target_t <= threshold:
+            if target_t_min_1 <= threshold:
+                return "peace"
+            elif target_t_min_1 > threshold:
+                return "desc"
+            else:
+                return pd.NA
+        elif target_t > threshold:
+            if target_t_min_1 <= threshold:
+                return "esc"
+            elif target_t_min_1 > threshold:
+                return "war"
+            else:
+                return pd.NA
+        else:
+            return pd.NA
     
 
     @staticmethod
@@ -902,83 +976,3 @@ class MarkovModel:
             warnings.warn("Found steps higher than 36 months. This may lead to unreliable predictions.", UserWarning)
         
         return steps_list
-    
-
-    def _add_markov_states(
-            self,
-            data: pd.DataFrame,
-            target: str,
-        ) -> pd.DataFrame:
-        """
-        Add Markov states to the data based on the target fatalities.
-
-        Args:
-            data (pd.DataFrame): Input data containing target column
-            target (str): Name of target_column
-        Returns:
-            pd.DataFrame: Data with an additional 'markov_state' column.
-        """
-
-        data = data.sort_index(level=["country_id", "month_id"])  # sort by country_id, month_id
-
-        # compute temporary t-1 of target
-        data[f"{target}_t_min_1"] = data.groupby(level="country_id")[target].shift(1)
-
-        # compute markov states
-        data["markov_state"] = data.apply(
-            lambda row: self._compute_markov_state(
-                row[target], 
-                row[f"{target}_t_min_1"], 
-                self._markov_threshold
-            ), 
-            axis=1
-        )
-
-        # drop temporary t-1 column
-        data.drop(columns=[f"{target}_t_min_1"], inplace=True)
-
-        return data
-    
-
-
-
-
-    @staticmethod
-    def _compute_markov_state(
-            target_t: int, 
-            target_t_min_1: int, 
-            threshold: int = 0
-        ) -> Union[str, NAType]:
-        """
-        Compute the Markov state based on the number of target at time t and t-1.
-        Possible Markov states are:
-        - "peace": target_t <= threshold and target_t_min_1 <= threshold
-        - "desc": target_t <= threshold and target_t_min_1 > threshold
-        - "esc": target_t > threshold and target_t_min_1 <= threshold
-        - "war": target_t > threshold and target_t_min_1 > threshold
-        
-        Args:
-            target_t (int): Target at time t.
-            target_t_min_1 (int): Target at time t-1.
-            threshold (int, optional): Threshold for considering target. Defaults to 0.
-
-        Returns:
-            Union[str, NAType]: The Markov state as a string or pd.NA if not computable.
-        """
-
-        if target_t <= threshold:
-            if target_t_min_1 <= threshold:
-                return "peace"
-            elif target_t_min_1 > threshold:
-                return "desc"
-            else:
-                return pd.NA
-        elif target_t > threshold:
-            if target_t_min_1 <= threshold:
-                return "esc"
-            elif target_t_min_1 > threshold:
-                return "war"
-            else:
-                return pd.NA
-        else:
-            return pd.NA
