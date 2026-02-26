@@ -4,8 +4,190 @@ import pandas as pd
 
 from typing import Union, Dict, List, Optional, Any, Literal
 from pandas._libs.missing import NAType
+from tqdm import tqdm
 
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+
+
+class MarkovStateModel:
+    """
+    A Markov state prediction model that predicts the probabilities of the Markov state of a future month, 
+    given the current month's state and a set of features, for a given step size. 
+    """
+
+    def __init__(
+            self,
+            step: int,
+            partitioner_dict: dict[str, tuple[int, int]],
+            rf_class_params: Optional[dict[str, Any]] = None,
+            random_state: int = 42,
+            n_jobs: int = -1,
+    ):
+        
+        self.train_start, self.train_end = partitioner_dict["train"]
+        self.test_start, self.test_end = partitioner_dict["test"]
+        self.random_state = random_state
+        self.step = step
+
+        self._rf_class_params = rf_class_params if rf_class_params is not None else {}
+
+        self.models: dict[str, RandomForestClassifier] = {}
+        self._is_fitted = False
+        
+        self._markov_states = ["peace", "desc", "esc", "war"]
+
+        self._markov_features: list[str] = []
+        self._markov_target: str = ""
+        self._n_samples: int = 0
+
+
+    def fit(
+            self, 
+            data: pd.DataFrame, 
+            markov_column: str, 
+            markov_features: list[str]
+        ) -> "MarkovStateModel":
+        """
+        Fit the Markov state prediction model for a given step size.
+        The model is fitted separately for each Markov state, using only the samples in that state as training data. 
+        The fitted models are stored in the self._models attribute, with keys corresponding to Markov starting state.
+        Args:
+            data (pd.DataFrame): Input data containing features and target column.
+                The data must contain a multi-index with levels "country_id" and "month_id", and be sorted by these levels.
+                The data must also contain a column with the Markov state, and the features specified in markov_features.
+            markov_column (str): Name of the column to compute Markov states from (should represent number of fatalities).
+            markov_features (list[str]): List of feature column names to use for predicting Markov states.
+        Returns:
+            MarkovStateModel: The fitted MarkovStateModel instance.
+        """
+
+        data = data.copy()
+
+        # create target state by shifting markov_state by -step
+        data["markov_state_target"] = (
+            data.sort_index(level="month_id")
+            .groupby(level="country_id")[markov_column]
+            .shift(-self.step)
+        )
+
+        # add target_month_id column
+        data = data.reset_index()
+        data["target_month_id"] = data["month_id"] + self.step
+        data.set_index(["country_id", "month_id"], inplace=True)
+
+        # filter data to training period
+        train_data = data.loc[
+            data["target_month_id"].isin(
+                range(self.train_start, self.train_end + 1))
+        ].dropna()
+
+        self._n_samples = len(train_data)
+        self._markov_features = markov_features
+        self._markov_target = markov_column
+
+        for state in self._markov_states:
+
+            # get subset of data for current state
+            state_subset = train_data[train_data["markov_state"] == state].drop(columns="markov_state").dropna()
+
+            # prepare training data
+            X_train = state_subset[self._markov_features]
+            y_train = state_subset["markov_state_target"]
+
+            # initialize random forest classifier
+            rf_class = RandomForestClassifier(**self._rf_class_params)
+
+            # fit model
+            rf_class.fit(X_train, y_train)
+
+            # store model for current state
+            self.models[state] = rf_class
+
+        self._is_fitted = True
+
+        return self
+
+
+    def predict(self, data: pd.DataFrame, feature_cols: list[str]) -> np.ndarray:
+
+        #self._model.predict()
+        ...    
+
+        
+
+class MarkovFatalityModel:
+
+    def __init__(
+            self,
+            step: int,
+            partitioner_dict: dict[str, tuple[int, int]],
+            rf_reg_params: Optional[dict[str, Any]] = None,
+            random_state: int = 42,
+            n_jobs: int = -1
+        ):
+
+        self.train_start, self.train_end = partitioner_dict["train"]
+        self.test_start, self.test_end = partitioner_dict["test"]
+        self.random_state = random_state
+        self.step = step
+
+        self._rf_reg_params = rf_reg_params if rf_reg_params is not None else {}
+
+        self.models: dict[str, RandomForestRegressor] = {}
+        self._is_fitted = False
+
+        self._features: list[str] = []
+        self._target: str = ""
+        self._n_samples: int = 0
+        ...
+
+
+    def fit(
+            self,
+            data: pd.DataFrame,
+            target_column: str,
+            features: list[str]
+        ) -> "MarkovFatalityModel":
+
+        data = data.copy()
+
+        # add target column
+        data["fatalities_target_month"] = data.sort_index(level="month_id").groupby(level="country_id")[target_column].shift(-self.step)
+
+        # add target_month_id column
+        data = data.reset_index()
+        data["target_month_id"] = data["month_id"] + self.step
+        data.set_index(["country_id", "month_id"], inplace=True)
+
+        # filter data to training period
+        train_data = data.loc[
+            data["target_month_id"].isin(
+                range(self.train_start, self.train_end + 1))
+        ].drop(columns="target_month_id").dropna()
+
+        self._n_samples = len(train_data)
+        self._features = features
+        self._target = target_column
+
+        for state in ["esc", "war"]:
+
+            state_subset = train_data[train_data["markov_state"] == state].dropna()
+
+            X_train = state_subset[self._features]
+            y_train = state_subset["fatalities_target_month"]
+
+            rf_reg = RandomForestRegressor(**self._rf_reg_params)
+
+            rf_reg.fit(X_train, y_train)
+
+            self.models[state] = rf_reg
+
+        self._is_fitted = True
+
+        return self
+
+    def predict(self, data: pd.DataFrame, feature_cols: list[str]) -> np.ndarray:
+        ...
 
  
 class MarkovModel:
@@ -46,11 +228,12 @@ class MarkovModel:
         )
 
         # set model parameters
-        self._train_start, self._train_end = partitioner_dict["train"]
-        self._test_start, self._test_end = partitioner_dict["test"]
+        self._partitioner_dict = partitioner_dict
         self._markov_method = markov_method
         self._regression_method = regression_method
+        self._rf_class_params = rf_class_params
         self._random_state = random_state
+        self._n_jobs = n_jobs
 
         # set sub-model parameters
         self._set_model_params(
@@ -70,10 +253,9 @@ class MarkovModel:
         self._fatalities_features: list[str] = []
 
         # set attributes to store fitted models
-        self._models: dict[str, dict[int, Any]] = {
-            "state": {},
-            "fatalities": {},
-        }
+        self._state_models: dict[int, Any] = {}
+        self._fatality_models: dict[int, Any] = {}
+        
         self._is_fitted: bool = False
 
 
@@ -120,43 +302,59 @@ class MarkovModel:
         # get full list features
         all_features = data.columns.drop([self._target, self._markov_target]).tolist()
 
-        self._state_features = all_features if state_features is None else state_features
+        self._markov_features = all_features if state_features is None else state_features
         self._fatalities_features = all_features if fatalities_features is None else fatalities_features
 
         # add markov states to data
         data = self._add_markov_states(data, markov_target)
 
-        # fit markov state model
+        markov_steps = []
+        # if predicting directly, fit markov model for all steps
         if self._markov_method == "direct":
-
-            # if predicting directly, fit for all steps
-            for step in steps_list:
-                self._fit_markov_state_model(
-                    data=data, step=step, verbose=verbose
-                )
-            
+            markov_steps = steps_list
+        # if predicting using transition matrix, only fit for step = 1
         elif self._markov_method == "transition":
-            # if predicting using transition matrix, only fit for step = 1
-            self._fit_markov_state_model(
-                data=data, step=1, verbose=verbose
+            markov_steps = [1]
+
+        # fit markov_model for all steps
+        for step in tqdm(markov_steps, desc="Fitting Markov State Models"):
+            state_model = MarkovStateModel(
+                step = step,
+                partitioner_dict = self._partitioner_dict,
+                rf_class_params = self._rf_class_params,
+                random_state = self._random_state,
+                n_jobs = self._n_jobs
             )
+            state_model.fit(
+                data=data,
+                markov_column = "markov_state",
+                markov_features = self._markov_features
+            )
+            self._state_models[step] = state_model
 
-        if verbose:
-            print("\nFinished fitting Random Forest Classifiers for all Markov states.", flush=True)
-
-        # fit fatality model
+        regression_steps = []
+        # if predicting with single regression model, fit for step 1 only
         if self._regression_method == "single":
-            self._fit_fatality_model(
-                data=data, target=self._target, step=1, verbose=verbose
-            )
+            regression_steps = [1]
+        # if predicting with multi regression, fit separate model for each step
         elif self._regression_method == "multi":
-             for step in steps_list:
-                self._fit_fatality_model(
-                    data=data, target=self._target, step=step, verbose=verbose
-                )
+            regression_steps = steps_list
 
-        if verbose:
-            print(f"\nFinished fitting Random Forest Regressors for all Markov states.", flush=True)
+        for step in tqdm(regression_steps, desc="Fitting Fatality Models"):
+
+            fatality_model = MarkovFatalityModel(
+                step = step,
+                partitioner_dict = self._partitioner_dict,
+                rf_reg_params = self._rf_reg_params,
+                random_state = self._random_state,
+                n_jobs = self._n_jobs
+            )
+            fatality_model.fit(
+                data=data,
+                target_column = self._target,
+                features = self._fatalities_features
+            )
+            self._fatality_models[step] = fatality_model
 
         # set fitted flag
         self._is_fitted = True
@@ -229,121 +427,6 @@ class MarkovModel:
             print("\nFinished predicting for all steps.", flush=True)
 
         return combined_predictions
-    
-
-    def _fit_markov_state_model(
-            self,
-            data: pd.DataFrame,
-            step: int,
-            verbose: bool = True
-        ) -> None:
-        """
-        Fit the state-prediction model for a given step.
-        Stores the fitted models in self._models["state"][step].
-
-        Args:
-            data (pd.DataFrame): The dataset.
-            step (int): The prediction step.
-            verbose (bool, optional): Whether to print progress messages. Defaults to True.
-        """
-
-        data = data.copy()
-
-        # create target state by shifting markov_state by -step
-        data["markov_state_target"] = data.sort_index(level="month_id").groupby(level="country_id")["markov_state"].shift(-step)
-
-        # add target_month_id column
-        data = data.reset_index()
-        data["target_month_id"] = data["month_id"] + step
-        data.set_index(["country_id", "month_id"], inplace=True)
-
-        # filter data to training period
-        train_data = data.loc[
-            data["target_month_id"].isin(
-                range(self._train_start, self._train_end + 1))
-        ].dropna()
-
-        # initialize dictionaries to store models
-        rf_class_models = {}
-
-        for state in self._markov_states:
-
-            if verbose:
-                print(f"Fitting Random Forest Classifier for state: {state} and step: {step}" + " " * 20, flush=True, end="\r")
-
-            # get subset of data for current state
-            state_subset = train_data[train_data["markov_state"] == state].drop(columns="markov_state").dropna()
-
-            # prepare training data
-            X_train = state_subset[self._state_features]
-            y_train = state_subset["markov_state_target"]
-
-            # initialize random forest classifier
-            rf_class = RandomForestClassifier(**self._rf_class_params)
-
-            # fit model
-            rf_class.fit(X_train, y_train)
-
-            # store model for current state
-            rf_class_models[state] = rf_class
-
-        # store all models for current step
-        self._models["state"][step] = rf_class_models
-
-
-    def _fit_fatality_model(
-            self,
-            data: pd.DataFrame,
-            target: str,
-            step: int,
-            verbose: bool = True
-        ) -> None:
-        """
-        Fit the fatality-prediction model.
-        Stores the fitted models in self._models["fatalities"][step].
-
-        Args:
-            data (pd.DataFrame): The dataset.
-            target (str): The target column name. This is used to compute markov states
-            step (int): The prediction step.
-            verbose (bool, optional): Whether to print progress messages. Defaults to True.
-        """
-
-        data = data.copy()
-
-        # add target column
-        data["fatalities_target_month"] = data.sort_index(level="month_id").groupby(level="country_id")[target].shift(-step)
-   
-        # add target_month_id column
-        data = data.reset_index()
-        data["target_month_id"] = data["month_id"] + step
-        data.set_index(["country_id", "month_id"], inplace=True)
-
-        # filter data to training period
-        train_data = data.loc[
-            data["target_month_id"].isin(
-                range(self._train_start, self._train_end + 1))
-        ].drop(columns="target_month_id").dropna()
-
-        rf_reg_models = {}
-
-        for state in ["esc", "war"]:
-
-            if verbose:
-                print(f"Fitting Random Forest Regressor for state: {state} and step: {step}" + " " * 20, flush=True, end="\r")
-
-            state_subset = train_data[train_data["markov_state"] == state].dropna()
-
-            X_train = state_subset[self._fatalities_features]
-            y_train = state_subset["fatalities_target_month"]
-
-            rf_reg = RandomForestRegressor(**self._rf_reg_params)
-
-            rf_reg.fit(X_train, y_train)
-
-            rf_reg_models[state] = rf_reg
-
-        self._models["fatalities"][step] = rf_reg_models
 
 
     def _predict_directly(
@@ -585,43 +668,7 @@ class MarkovModel:
         return test_data_full
 
       
-    def _add_markov_states(
-            self,
-            data: pd.DataFrame,
-            target: str,
-            threshold: int = 0
-        ) -> pd.DataFrame:
-        """
-        Add Markov states to the data based on the target fatalities.
 
-        Args:
-            data (pd.DataFrame): Input data containing target column
-            target (str): Name of target_column
-            threshold (int, optional): Threshold for computing states. Defaults to 0.
-
-        Returns:
-            pd.DataFrame: Data with an additional 'markov_state' column.
-        """
-
-        data = data.sort_index(level=["country_id", "month_id"])  # sort by country_id, month_id
-
-        # compute temporary t-1 of target
-        data[f"{target}_t_min_1"] = data.groupby(level="country_id")[target].shift(1)
-
-        # compute markov states
-        data["markov_state"] = data.apply(
-            lambda row: self._compute_markov_state(
-                row[target], 
-                row[f"{target}_t_min_1"], 
-                threshold
-            ), 
-            axis=1
-        )
-
-        # drop temporary t-1 column
-        data.drop(columns=[f"{target}_t_min_1"], inplace=True)
-
-        return data
     
 
     def _set_model_params(
@@ -855,6 +902,45 @@ class MarkovModel:
             warnings.warn("Found steps higher than 36 months. This may lead to unreliable predictions.", UserWarning)
         
         return steps_list
+    
+
+    def _add_markov_states(
+            self,
+            data: pd.DataFrame,
+            target: str,
+        ) -> pd.DataFrame:
+        """
+        Add Markov states to the data based on the target fatalities.
+
+        Args:
+            data (pd.DataFrame): Input data containing target column
+            target (str): Name of target_column
+        Returns:
+            pd.DataFrame: Data with an additional 'markov_state' column.
+        """
+
+        data = data.sort_index(level=["country_id", "month_id"])  # sort by country_id, month_id
+
+        # compute temporary t-1 of target
+        data[f"{target}_t_min_1"] = data.groupby(level="country_id")[target].shift(1)
+
+        # compute markov states
+        data["markov_state"] = data.apply(
+            lambda row: self._compute_markov_state(
+                row[target], 
+                row[f"{target}_t_min_1"], 
+                self._markov_threshold
+            ), 
+            axis=1
+        )
+
+        # drop temporary t-1 column
+        data.drop(columns=[f"{target}_t_min_1"], inplace=True)
+
+        return data
+    
+
+
 
 
     @staticmethod
