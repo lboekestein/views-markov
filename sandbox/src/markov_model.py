@@ -484,7 +484,7 @@ class MarkovModel:
             self._fatality_models[step] = fatality_model
 
         if verbose:
-            print("\nFinished fitting Markov model.", flush=True)
+            print("Finished fitting Markov model.", flush=True)
 
         # set fitted flag
         self._is_fitted = True
@@ -543,7 +543,7 @@ class MarkovModel:
         )
 
         if verbose:
-            print("\nFinished predicting for all steps.", flush=True)
+            print("Finished predicting for all steps.", flush=True)
 
         return combined_predictions
     
@@ -554,7 +554,7 @@ class MarkovModel:
             step: int,
         ) -> pd.DataFrame:
         """
-        Predict the target variable for a given test dataset and step, using the direct method.
+        Predict the target variable for a given test dataset and step´
 
         Args:
             data (pd.DataFrame): The dataset.
@@ -564,6 +564,7 @@ class MarkovModel:
             pd.DataFrame: The predicted values.
         """
 
+        ### 1) Data preprocessing
         data = data.copy()
 
         # add target_month_id column
@@ -571,13 +572,15 @@ class MarkovModel:
         data["target_month_id"] = data.groupby("country_id")["month_id"].shift(-step)
         data.set_index(["country_id", "month_id"], inplace=True)
 
+        # filter data to test period
         self._test_start, self._test_end = self._partitioner_dict["test"]
-
-          # filter data to test period
         test_data = data.loc[
             data["target_month_id"].isin(
                 range(self._test_start, self._test_end + 1))
         ].dropna()
+
+    
+        ### 2) Predict probability of Markov states in target month
 
         # retrieve models for given step
         if self._markov_method == "transition":
@@ -585,34 +588,37 @@ class MarkovModel:
         else:   # if self._markov_method == "direct"
             state_model = self._state_models[step]
 
-        # Initialize lists to hold results
+        # initialize lists to hold results
         state_probabilities: list[pd.DataFrame] = []
         predicted_fatalities: list[pd.Series] = []
 
-        # iterate over each possible starting state
+        # get probability of Markov state in target month, for each possible starting state
         for start_state in self._markov_states:
-
             state_probs = state_model.predict(test_data, start_state=start_state)
-
             state_probabilities.append(state_probs)
 
-        # Concatenate all start-state probability tables horizontally
+        # Concatenate all start-state probability tables
         state_probabilities_df = pd.concat(state_probabilities, axis=1)
 
         # ensure all required probability columns exist, if they don't, set to 0
-        # this is needed because not all states will have probabilities computed
+        # this is needed because not all states will have probabilities computed,
+        # but we need all combinations to make the transition matrix
         # mainly a problem when predicting only one step ahead
         for state in self._markov_states:
             for starting_state in self._markov_states:
                 if f"p_{state}_c_{starting_state}" not in state_probabilities_df.columns:
                     state_probabilities_df.loc[:, f"p_{state}_c_{starting_state}"] = 0
 
+
+        ### 3) Predict number of fatalities in target month, given possible Markov states
+
+        # retrieve models for given step
         if self._regression_method == "multi":
             fatalities_model = self._fatality_models[step]
         else:     # if self._regression_method == "single":
             fatalities_model = self._fatality_models[1]
 
-        # 2) predict fatalities in target month given current state (only for esc and war)
+        # predict fatalities in target month given current state (only for esc and war)
         for start_state in ["esc", "war"]:
     
             # predict fatalities given start state
@@ -621,7 +627,7 @@ class MarkovModel:
             # add to results
             predicted_fatalities.append(fatalities_preds)
 
-        # Concatenate all predicted fatalities tables horizontally
+        # concatenate all predicted fatalities tables horizontally
         predicted_fatalities_df = pd.concat(predicted_fatalities, axis=1)
 
         # combine results with test data
@@ -629,35 +635,15 @@ class MarkovModel:
             test_data, state_probabilities_df, predicted_fatalities_df
             ], axis=1)
         
+        # if using transition, apply transition matrix to compute probabilities for multiple steps ahead
         if self._markov_method == "transition":
-            
-            # extract all 16 columns for the transition matrix and reshape
-            n_states = len(self._markov_states)
-            cols = [f"p_{next}_c_{current}" for current in self._markov_states for next in self._markov_states]
+            test_data_full = self._apply_transition_power(test_data_full, step)
 
-            # reshape to 3D array: (n_samples, n_states, n_states) 
-            P = test_data_full[cols].to_numpy().reshape(-1, n_states, n_states)
 
-            # compute transition matrices to the power of step
-            P_k = self._matrix_power(P, step)
-
-            # reshape back to columns of dataframe
-            df_Pk = pd.DataFrame(
-                P_k.reshape(-1, n_states * n_states),
-                columns=cols,
-                index=test_data_full.index
-            )
-
-            # merge with test data
-            test_data_full.drop(columns=cols, inplace=True)
-            test_data_full = test_data_full.merge(
-                df_Pk,
-                left_index=True,
-                right_index=True,
-            )
+        ### 4) Given probabilities of Markov states and predicted fatalities conditional on states, 
+        ###    compute weighted fatalities in target month
 
         # compute weighted fatalities
-        # TODO currently this is a row-wise operation, slightly slow, can be optimized later if needed
         test_data_full["predicted_fatalities"] = test_data_full.apply(self._get_weighted_fatalities, axis=1)
         # add step as column
         test_data_full["step"] = step
@@ -665,7 +651,7 @@ class MarkovModel:
         # drop rows where target_month_id is NA (due to shifting)
         test_data_full = test_data_full.dropna(subset=["target_month_id"])
 
-        # return results
+        ### 5) Compile results and return 
         test_data_full = (
             test_data_full
             .reset_index()
@@ -843,6 +829,52 @@ class MarkovModel:
         )
 
         return weighted_fatalities
+    
+
+    def _apply_transition_power(self, data: pd.DataFrame, step: int) -> pd.DataFrame:
+        """
+        Apply the transition matrix to compute probabilities for multiple steps ahead.
+
+        This method extracts the transition probabilities from the data, reshapes them into a 3D array of transition matrices for each sample, 
+        computes the K-th power of each transition matrix using the _matrix_power method, and then reshapes the results back into a 
+        dataframe format to merge with the original data. This allows us to compute the probabilities of being in each state at the target month, 
+        given the current state and the transition probabilities, for any step size.
+
+        Args:
+            data (pd.DataFrame): The input dataframe containing the transition probabilities for step 1.
+            step (int): The number of steps ahead to compute the probabilities for.
+        Returns:
+            pd.DataFrame: The input dataframe with additional columns for the probabilities of being in each state 
+            at the target month, given the current state and the transition probabilities, for the specified step size.
+        """
+
+
+        # extract all 16 columns for the transition matrix and reshape
+        n_states = len(self._markov_states)
+        cols = [f"p_{next}_c_{current}" for current in self._markov_states for next in self._markov_states]
+
+        # reshape to 3D array: (n_samples, n_states, n_states) 
+        P = data[cols].to_numpy().reshape(-1, n_states, n_states)
+
+        # compute transition matrices to the power of step
+        P_k = self._matrix_power(P, step)
+
+        # reshape back to columns of dataframe
+        df_Pk = pd.DataFrame(
+            P_k.reshape(-1, n_states * n_states),
+            columns=cols,
+            index=data.index
+        )
+
+        # merge with test data
+        data.drop(columns=cols, inplace=True)
+        data = data.merge(
+            df_Pk,
+            left_index=True,
+            right_index=True,
+        )
+
+        return data
     
 
     def _add_markov_states(
