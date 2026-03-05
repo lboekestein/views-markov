@@ -5,14 +5,20 @@ Translated from R to Python based on the "new_markov" implementation in the fata
 Original R code can be found here: https://github.com/prio-data/viewsforecasting/tree/main/Tools/new_markov
 """
 
+import logging
 import warnings
 from typing import Union, Dict, List, Optional, Any, Literal
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pickle 
+
 from pandas._libs.missing import NAType
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 
 class MarkovStateModel:
@@ -302,6 +308,12 @@ class MarkovModel:
     Args:
         partitioner_dict (Dict[str, Tuple[int, int]]): A dictionary with keys "train" and "test", 
             each mapping to a tuple of (start_month_id, end_month_id) for the respective data partitions.
+        steps (int | list[int] | range): Steps ahead to fit the model for.
+        target (str): Name of the target column in the data.
+        markov_target (str): Name of the target column to compute Markov states from (should represent number of fatalities).
+        state_features (Optional[list[str]], optional): List of feature column names to use for predicting Markov states.
+        fatalities_features (Optional[list[str]], optional): List of feature column names to use for predicting fatalities.
+        verbose (bool, optional): Whether to print progress messages. Defaults to True.
         markov_method (str, optional): Markov method to use. Options are "direct" or "transition". 
             When "direct", the model predicts the markov state of the target month directly for any step size.
             When "transition", the model computes the transition matrix between states and uses it to forecast multiple steps ahead.
@@ -319,6 +331,12 @@ class MarkovModel:
     def __init__(
             self, 
             partitioner_dict: dict[str, tuple[int, int]],
+            steps: int | list[int] | range,
+            target: str,
+            markov_target: str,
+            state_features: Optional[list[str]] = None,
+            fatalities_features: Optional[list[str]] = None,
+            verbose: bool = True,
             markov_method: Literal["direct", "transition"] = "direct",
             regression_method: Literal["single", "multi"] = "single",
             markov_threshold: int = 0,
@@ -335,12 +353,19 @@ class MarkovModel:
 
         # set model parameters
         self._partitioner_dict = partitioner_dict
+        self._steps = self._get_list_of_steps(steps)
         self._markov_method = markov_method
         self._regression_method = regression_method
         self._markov_threshold = markov_threshold
 
+        self._state_features = state_features
+        self._fatalities_features = fatalities_features
+        self._target = target
+        self._markov_target = markov_target
+
         self._random_state = random_state
         self._n_jobs = n_jobs
+        self._verbose = verbose
 
         self._rf_class_params = {}
         self._rf_reg_params = {}
@@ -356,10 +381,6 @@ class MarkovModel:
         self._index_columns = ["country_id", "month_id"]
 
         # initialize attributes to be set during fitting
-        self._target: str = ""
-        self._markov_target: str = ""
-        self._state_features: list[str] = []
-        self._fatalities_features: list[str] = []
 
         # set attributes to store fitted models
         self._state_models: dict[int, MarkovStateModel] = {}
@@ -371,12 +392,6 @@ class MarkovModel:
     def fit(
             self,
             data: pd.DataFrame,
-            steps: int | list[int] | range,
-            target: str,
-            markov_target: str,
-            state_features: Optional[list[str]] = None,
-            fatalities_features: Optional[list[str]] = None,
-            verbose: bool = True
         ) -> "MarkovModel":
         """
         Fit the Markov model to the provided data.
@@ -386,12 +401,6 @@ class MarkovModel:
         
         Args:
             data (pd.DataFrame): Input data containing features and target column.
-            steps (int | list[int] | range): Steps ahead to fit the model for.
-            target (str): Name of the target column in the data.
-            markov_target (str): Name of the target column to compute Markov states from (should represent number of fatalities).
-            state_features (Optional[list[str]], optional): List of feature column names to use for predicting Markov states.
-            fatalities_features (Optional[list[str]], optional): List of feature column names to use for predicting fatalities.
-            verbose (bool, optional): Whether to print progress messages. Defaults to True.
         Returns:
             MarkovModel: The fitted MarkovModel instance.
         """
@@ -399,40 +408,33 @@ class MarkovModel:
         data = data.copy()
 
         # verify input data
-        self._verify_input_data(data, target, markov_target, state_features, fatalities_features)
-
-        # format steps to list
-        steps_list = self._get_list_of_steps(steps)
-
-        # set target
-        self._target = target
-        self._markov_target = markov_target
+        self._verify_input_data(data, self._target, self._markov_target, self._state_features, self._fatalities_features)
 
         # get full list features
         all_features = data.columns.drop([self._target, self._markov_target]).tolist()
 
-        self._markov_features = all_features if state_features is None else state_features
-        self._fatalities_features = all_features if fatalities_features is None else fatalities_features
+        self._markov_features = all_features if self._state_features is None else self._state_features
+        self._fatalities_features = all_features if self._fatalities_features is None else self._fatalities_features
 
         # add markov states to data
-        data = self._add_markov_states(data, markov_target)
+        data = self._add_markov_states(data, self._markov_target)
 
         markov_steps = []
         # if predicting directly, fit markov model for all steps
         if self._markov_method == "direct":
-            markov_steps = steps_list
+            markov_steps = self._steps
         # if predicting using transition matrix, only fit for step = 1
         elif self._markov_method == "transition":
             markov_steps = [1]
 
-        if verbose:
+        if self._verbose:
             print(f"Fitting Markov model using {self._markov_method} method and {self._regression_method} regression:")
 
         # fit markov_model for all steps
         for step in tqdm(
             markov_steps, 
             desc=f"Fitting Markov State Models ({self._markov_method} method)",
-            disable=verbose is False
+            disable=self._verbose is False
         ):
             
             state_model = MarkovStateModel(
@@ -455,12 +457,12 @@ class MarkovModel:
             regression_steps = [1]
         # if predicting with multi regression, fit separate model for each step
         elif self._regression_method == "multi":
-            regression_steps = steps_list
+            regression_steps = self._steps
 
         for step in tqdm(
             regression_steps, 
             desc=f"Fitting Fatality Models ({self._regression_method} method)",
-            disable=verbose is False
+            disable=self._verbose is False
         ):
 
             fatality_model = MarkovFatalityModel(
@@ -477,20 +479,26 @@ class MarkovModel:
             )
             self._fatality_models[step] = fatality_model
 
-        if verbose:
+        if self._verbose:
             print("Finished fitting Markov model.", flush=True)
 
         # set fitted flag
         self._is_fitted = True
 
         return self
+    
+    def save(self, path: Union[str, Path]) -> None:
+        try:
+            with open(path, "wb") as file:
+                pickle.dump(self, file)
+            logger.info(f"Model successfully saved to {path}")
+        except Exception as e:
+            logger.exception(f"Failed to save model: {e}")
 
 
     def predict(
             self, 
             data: pd.DataFrame,
-            steps: int | list[int] | range,
-            verbose: bool = True
         ) -> pd.DataFrame:
         """
         Predict the target variable for the given dataset and steps.
@@ -506,19 +514,16 @@ class MarkovModel:
 
         if not self._is_fitted:
             raise ValueError("Model is not yet fitted. Cannot predict")
-                
-        # format steps to list
-        steps_list = self._get_list_of_steps(steps)
 
         # check if model has been trained for given steps
-        self._check_if_steps_trained(steps_list)
+        self._check_if_steps_trained(self._steps)
 
         # add markov states to data
         data = self._add_markov_states(data, target=self._markov_target)
 
         # predict for all given steps
         predictions: dict[int, pd.DataFrame] = {}
-        for step in tqdm(steps_list, desc="Predicting steps", disable=verbose is False):
+        for step in tqdm(self._steps, desc="Predicting steps", disable=self._verbose is False):
         
             prediction_step = self._predict_step(
                 data,
@@ -536,7 +541,7 @@ class MarkovModel:
             .rename(columns=lambda x: f"predicted_fatalities_t_min_{x}")
         )
 
-        if verbose:
+        if self._verbose:
             print("Finished predicting for all steps.", flush=True)
 
         return combined_predictions
