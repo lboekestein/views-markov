@@ -13,6 +13,14 @@ class MarkovStateModel:
     """
     A Markov state prediction model that predicts the probabilities of the Markov state of a future month, 
     given the current month's state and a set of features, for a given step size. 
+
+    Args:
+        step (int): The number of months ahead to predict the Markov state for.
+        partitioner_dict (dict[str, tuple[int, int]]): A dictionary with keys "train" and "test", 
+            each mapping to a tuple of (start_month_id, end_month_id) for the respective data partitions.
+        rf_class_params (Optional[dict[str, Any]], optional): Parameters for the Random Forest Classifier. Defaults to None.
+        random_state (int, optional): Random state for reproducibility. Defaults to 42.
+        n_jobs (int, optional): Number of jobs to run in parallel. Defaults to -1.
     """
 
     def __init__(
@@ -23,34 +31,21 @@ class MarkovStateModel:
             random_state: int = 42,
             n_jobs: int = -1,
         ):
-        """
-        A Markov state prediction model that predicts the probabilities of the Markov state of a future month,
-        given the current month's state and a set of features, for a given step size.
-
-        Args:
-            step (int): The number of months ahead to predict the Markov state for.
-            partitioner_dict (dict[str, tuple[int, int]]): A dictionary with keys "train" and "test", 
-                each mapping to a tuple of (start_month_id, end_month_id) for the respective data partitions.
-            rf_class_params (Optional[dict[str, Any]], optional): Parameters for the Random Forest Classifier. Defaults to None.
-            random_state (int, optional): Random state for reproducibility. Defaults to 42.
-            n_jobs (int, optional): Number of jobs to run in parallel. Defaults to -1.
-        """
         
+        self.step = step
         self.train_start, self.train_end = partitioner_dict["train"]
         self.test_start, self.test_end = partitioner_dict["test"]
-        self.step = step
         
+        self._rf_class_params = rf_class_params if rf_class_params is not None else {}
         self._random_state = random_state
         self._n_jobs = n_jobs
-        self._rf_class_params = rf_class_params if rf_class_params is not None else {}
 
         self.models: dict[str, RandomForestClassifier] = {}
-        self._is_fitted = False
-        
-        self._markov_states = ["peace", "desc", "esc", "war"]
 
+        self._markov_states = ["peace", "desc", "esc", "war"]
         self._markov_features: list[str] = []
         self._markov_target: str = ""
+        self._is_fitted = False
         self._n_samples: int = 0
 
 
@@ -164,6 +159,14 @@ class MarkovFatalityModel:
     """
     A Markov fatality prediction model that predicts the number of fatalities in a future month, 
     given the predicted month's state and a set of features, for a given step size.
+
+    Args:
+        step (int): The number of months ahead to predict the number of fatalities for.
+        partitioner_dict (dict[str, tuple[int, int]]): A dictionary with keys "train" and "test", 
+            each mapping to a tuple of (start_month_id, end_month_id) for the respective data partitions.
+        rf_reg_params (Optional[dict[str, Any]], optional): Parameters for the Random Forest Regressor. Defaults to None.
+        random_state (int, optional): Random state for reproducibility. Defaults to 42.
+        n_jobs (int, optional): Number of jobs to run in parallel. Defaults to -1.
     """
 
 
@@ -175,18 +178,6 @@ class MarkovFatalityModel:
             random_state: int = 42,
             n_jobs: int = -1
         ):
-        """
-        A Markov fatality prediction model that predicts the number of fatalities in a future month,
-        given the predicted month's state and a set of features, for a given step size.
-
-        Args:
-            step (int): The number of months ahead to predict the number of fatalities for.
-            partitioner_dict (dict[str, tuple[int, int]]): A dictionary with keys "train" and "test", 
-                each mapping to a tuple of (start_month_id, end_month_id) for the respective data partitions.
-            rf_reg_params (Optional[dict[str, Any]], optional): Parameters for the Random Forest Regressor. Defaults to None.
-            random_state (int, optional): Random state for reproducibility. Defaults to 42.
-            n_jobs (int, optional): Number of jobs to run in parallel. Defaults to -1.
-        """
 
         self.train_start, self.train_end = partitioner_dict["train"]
         self.test_start, self.test_end = partitioner_dict["test"]
@@ -301,6 +292,22 @@ class MarkovFatalityModel:
 class MarkovModel:
     """
     A Markov prediction model for forecasting fatalities
+
+    Args:
+        partitioner_dict (Dict[str, Tuple[int, int]]): A dictionary with keys "train" and "test", 
+            each mapping to a tuple of (start_month_id, end_month_id) for the respective data partitions.
+        markov_method (str, optional): Markov method to use. Options are "direct" or "transition". 
+            When "direct", the model predicts the markov state of the target month directly for any step size.
+            When "transition", the model computes the transition matrix between states and uses it to forecast multiple steps ahead.
+            Defaults to "direct".
+        regression_method (str, optional): Regression method to use. Options are "single" or "multi". 
+            When "single", the model uses a single regression model for all steps.
+            When "multi", the model uses separate regression models for each step.
+            Defaults to "single".
+        random_state (int): Random state for reproducibility. Defaults to 42.
+        n_jobs (int): Number of jobs to run in parallel. Defaults to -1.
+        rf_class_params (Optional[Dict], optional): Parameters for Random Forest Classifier. Defaults to None.
+        rf_reg_params (Optional[Dict], optional): Parameters for Random Forest Regressor. Defaults to None.
     """
 
     def __init__(
@@ -314,25 +321,6 @@ class MarkovModel:
             rf_class_params: Optional[dict] = None,
             rf_reg_params: Optional[dict] = None
         ):
-        """
-        A Markov prediction model for forecasting fatalities.
-
-        Args:
-            partitioner_dict (Dict[str, Tuple[int, int]]): A dictionary with keys "train" and "test", 
-                each mapping to a tuple of (start_month_id, end_month_id) for the respective data partitions.
-            markov_method (str, optional): Markov method to use. Options are "direct" or "transition". 
-                When "direct", the model predicts the markov state of the target month directly for any step size.
-                When "transition", the model computes the transition matrix between states and uses it to forecast multiple steps ahead.
-                Defaults to "direct".
-            regression_method (str, optional): Regression method to use. Options are "single" or "multi". 
-                When "single", the model uses a single regression model for all steps.
-                When "multi", the model uses separate regression models for each step.
-                Defaults to "single".
-            random_state (int): Random state for reproducibility. Defaults to 42.
-            n_jobs (int): Number of jobs to run in parallel. Defaults to -1.
-            rf_class_params (Optional[Dict], optional): Parameters for Random Forest Classifier. Defaults to None.
-            rf_reg_params (Optional[Dict], optional): Parameters for Random Forest Regressor. Defaults to None.
-        """
 
         # verify input parameters
         self._verify_class_input_data(
