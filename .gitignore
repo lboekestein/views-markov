@@ -8,3 +8,6 @@ sandbox/r_version/old_pipeline_version/__pycache__/
 sandbox/r_version/old_pipeline_version/results/
 sandbox/r_version/old_pipeline_version/tmps/
 sandbox/r_version/rewritten_version/results/
+views_markov/__pycache__/
+views_markov/model/__pycache__/
+views_markov/manager/__pycache__/
