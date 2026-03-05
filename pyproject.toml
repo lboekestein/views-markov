@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "views-markov"
+version = "0.0.1"
+authors = [
+  { name = "Luuk Boekestein" }
+]
+description = "Markov model for forecasting conflict fatalities"
+requires-python = ">=3.9"
+
+[tool.setuptools]
+packages = ["views_markov"]
