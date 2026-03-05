@@ -5,7 +5,7 @@ from views_pipeline_core.cli.utils import parse_args, validate_arguments
 from views_pipeline_core.managers.model import ModelPathManager
 
 # Import your model manager class here
-# E.g. from views_stepshifter.manager.stepshifter_manager import StepshifterManager
+from views_markov.manager.markovmodel_manager import MarkovModelManager
 
 warnings.filterwarnings("ignore")
 
@@ -27,7 +27,7 @@ if __name__ == "__main__":
     args = parse_args()
     validate_arguments(args)
 
-    manager = YourModelManager(
+    manager = MarkovModelManager(
         model_path=model_path,
         wandb_notifications=args.wandb_notifications,
         use_prediction_store=args.prediction_store,

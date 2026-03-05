@@ -9,12 +9,11 @@ def get_meta_config():
     
     meta_config = {
         "name": "randahls_reindeer", 
-        "algorithm": "XGBModel",
-        # Uncomment and modify the following lines as needed for additional metadata:
-        # "targets": ["ln_ged_sb_dep"],
-        # "queryset": "escwa001_cflong",
-        # "level": "pgm",
-        # "creator": "Your name here",
+        "algorithm": "MarkovModel",
+        "targets": ["ln_ged_sb_dep"],
+        "queryset": "fatalities002_joint_narrow",
+        "level": "cm",
+        "creator": "Luuk Boekestein",
         "metrics": ["RMSLE", "CRPS", "MSE", "MSLE", "y_hat_bar"],
     }
     return meta_config

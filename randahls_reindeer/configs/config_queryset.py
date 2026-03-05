@@ -12,30 +12,242 @@ def generate():
     
     # VIEWSER 6, Example configuration. Modify as needed.
 
-    queryset_base = (Queryset("randahls_reindeer", "priogrid_month")
-        # Create a new column 'ln_sb_best' using data from 'priogrid_month' and 'ged_sb_best_count_nokgi' column
-        # Apply logarithmic transformation, handle missing values by replacing them with NA
-        .with_column(Column("ln_sb_best", from_loa="priogrid_month", from_column="ged_sb_best_count_nokgi")
-            .transform.ops.ln().transform.missing.replace_na())
-        
-        # Create a new column 'ln_ns_best' using data from 'priogrid_month' and 'ged_ns_best_count_nokgi' column
-        # Apply logarithmic transformation, handle missing values by replacing them with NA
-        .with_column(Column("ln_ns_best", from_loa="priogrid_month", from_column="ged_ns_best_count_nokgi")
-            .transform.ops.ln().transform.missing.replace_na())
-        
-        # Create a new column 'ln_os_best' using data from 'priogrid_month' and 'ged_os_best_count_nokgi' column
-        # Apply logarithmic transformation, handle missing values by replacing them with NA
-        .with_column(Column("ln_os_best", from_loa="priogrid_month", from_column="ged_os_best_count_nokgi")
-            .transform.ops.ln().transform.missing.replace_na())
-        
-        # Create columns for month and year_id
-        .with_column(Column("month", from_loa="month", from_column="month"))
-        .with_column(Column("year_id", from_loa="country_year", from_column="year_id"))
-        
-        # Create columns for country_id, col, and row
-        .with_column(Column("c_id", from_loa="country_year", from_column="country_id"))
-        .with_column(Column("col", from_loa="priogrid", from_column="col"))
-        .with_column(Column("row", from_loa="priogrid", from_column="row"))
-    )
+    qs_joint_narrow = (Queryset("fatalities002_joint_narrow", "country_month")
 
-    return queryset_base
+        # target variable
+        .with_column(Column("ln_ged_sb_dep", from_loa="country_month", from_column="ged_sb_best_sum_nokgi")
+                    .transform.ops.ln()
+                    .transform.missing.fill()
+                    )
+
+        .with_column(Column("gleditsch_ward", from_loa="country", from_column="gwcode")
+                    .transform.missing.fill()
+                    .transform.missing.replace_na()
+                    )
+
+        # Baseline features:
+        # lag of target variable
+        .with_column(Column("ln_ged_sb", from_loa="country_month", from_column="ged_sb_best_sum_nokgi")
+                    .transform.ops.ln()
+                    .transform.missing.fill()
+                    )
+
+        # Decay functions
+        # sb
+        .with_column(Column("decay_ged_sb_5", from_loa="country_month", from_column="ged_sb_best_sum_nokgi")
+                    .transform.missing.replace_na()
+                    .transform.bool.gte(5)
+                    .transform.temporal.time_since()
+                    .transform.temporal.decay(24)
+                    .transform.missing.replace_na()
+                    )
+        # os
+        .with_column(Column("decay_ged_os_5", from_loa="country_month", from_column="ged_os_best_sum_nokgi")
+                    .transform.missing.replace_na()
+                    .transform.bool.gte(5)
+                    .transform.temporal.time_since()
+                    .transform.temporal.decay(24)
+                    .transform.missing.replace_na()
+                    )
+
+        # Spatial lag decay
+        .with_column(Column("splag_1_decay_ged_sb_5", from_loa="country_month",
+                            from_column="ged_sb_best_sum_nokgi")
+                    .transform.missing.replace_na()
+                    .transform.bool.gte(5)
+                    .transform.temporal.time_since()
+                    .transform.temporal.decay(24)
+                    .transform.spatial.countrylag(1, 1, 0, 0)
+                    .transform.missing.replace_na()
+                    )
+
+        .with_column(Column("wdi_sp_pop_totl", from_loa="country_year", from_column="wdi_sp_pop_totl")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.missing.fill()
+                    )
+
+        # More conflict history [hh20]
+        .with_column(Column("ln_ged_sb_tlag_1", from_loa="country_month",
+                            from_column="ged_sb_best_sum_nokgi")
+                    .transform.ops.ln()
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(1)
+                    .transform.missing.fill()
+                    )
+
+        .with_column(Column("ln_ged_sb_tlag_2", from_loa="country_month",
+                            from_column="ged_sb_best_sum_nokgi")
+                    .transform.ops.ln()
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(2)
+                    .transform.missing.fill()
+                    )
+
+        .with_column(Column("decay_acled_os_5", from_loa="country_month", from_column="acled_os_fat")
+                    .transform.missing.replace_na()
+                    .transform.bool.gte(5)
+                    .transform.temporal.time_since()
+                    .transform.temporal.decay(24)
+                    .transform.missing.replace_na()
+                    )
+
+        .with_column(Column("decay_ged_sb_100", from_loa="country_month",
+                            from_column="ged_sb_best_sum_nokgi")
+                    .transform.missing.replace_na()
+                    .transform.bool.gte(100)
+                    .transform.temporal.time_since()
+                    .transform.temporal.decay(24)
+                    .transform.missing.replace_na()
+                    )
+
+        .with_column(Column("decay_ged_sb_500", from_loa="country_month",
+                            from_column="ged_sb_best_sum_nokgi")
+                    .transform.missing.replace_na()
+                    .transform.bool.gte(500)
+                    .transform.temporal.time_since()
+                    .transform.temporal.decay(24)
+                    .transform.missing.replace_na()
+                    )
+
+        # Features from reign [hh20]
+        .with_column(Column("reign_tenure_months", from_loa="country_month", from_column="tenure_months")
+                    .transform.missing.fill()
+                    .transform.missing.replace_na()
+                    )
+
+        # From WDI [hh20]
+        .with_column(Column("wdi_ag_lnd_frst_k2", from_loa="country_year", from_column="wdi_ag_lnd_frst_k2")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.missing.fill()
+                    )
+
+        .with_column(Column("wdi_nv_agr_totl_kn", from_loa="country_year", from_column="wdi_nv_agr_totl_kn")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.missing.fill()
+                    )
+
+        .with_column(Column("wdi_sh_sta_maln_zs", from_loa="country_year", from_column="wdi_sh_sta_maln_zs")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.missing.fill()
+                    )
+
+        .with_column(Column("wdi_sl_tlf_totl_fe_zs", from_loa="country_year",
+                            from_column="wdi_sl_tlf_totl_fe_zs")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.missing.fill()
+                    )
+
+        .with_column(Column("wdi_sm_pop_refg_or", from_loa="country_year", from_column="wdi_sm_pop_refg_or")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.missing.fill()
+                    )
+
+        .with_column(Column("wdi_sp_dyn_imrt_in", from_loa="country_year", from_column="wdi_sp_dyn_imrt_in")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.missing.fill()
+                    )
+
+        .with_column(Column("wdi_sp_pop_14_fe_zs", from_loa="country_year",
+                            from_column="wdi_sp_pop_0014_fe_zs")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.missing.fill()
+                    )
+
+        .with_column(Column("wdi_sp_pop_grow", from_loa="country_year", from_column="wdi_sp_pop_grow")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.missing.fill()
+                    )
+
+        # Spatial lags [hh20]
+
+        .with_column(Column("splag_wdi_ag_lnd_frst_k2", from_loa="country_year",
+                            from_column="wdi_ag_lnd_frst_k2")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.spatial.countrylag(1, 1, 0, 0)
+                    .transform.missing.replace_na()
+                    )
+
+        .with_column(Column("splag_wdi_sl_tlf_totl_fe_zs", from_loa="country_year",
+                            from_column="wdi_sl_tlf_totl_fe_zs")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.spatial.countrylag(1, 1, 0, 0)
+                    .transform.missing.replace_na()
+                    )
+
+        .with_column(Column("splag_wdi_sm_pop_netm", from_loa="country_year", from_column="wdi_sm_pop_netm")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.spatial.countrylag(1, 1, 0, 0)
+                    .transform.missing.replace_na()
+                    )
+
+        # From Vdem
+        .with_column(Column("vdem_v2xcl_dmove", from_loa="country_year", from_column="vdem_v2xcl_dmove")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.missing.fill()
+                    )
+
+        .with_column(Column("vdem_v2xcl_rol", from_loa="country_year", from_column="vdem_v2xcl_rol")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.missing.fill()
+                    )
+
+        .with_column(Column("vdem_v2xeg_eqdr", from_loa="country_year", from_column="vdem_v2xeg_eqdr")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.missing.fill()
+                    )
+
+        .with_column(Column("vdem_v2xpe_exlpol", from_loa="country_year",
+                            from_column="vdem_v2xpe_exlpol")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.missing.fill()
+                    )
+
+        .with_column(Column("vdem_v2xpe_exlsocgr", from_loa="country_year",
+                            from_column="vdem_v2xpe_exlsocgr")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.missing.fill()
+                    )
+
+        .with_column(Column("splag_vdem_v2xpe_exlsocgr", from_loa="country_year",
+                            from_column="vdem_v2xpe_exlsocgr")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.spatial.countrylag(1, 1, 0, 0)
+                    .transform.missing.replace_na()
+                    )
+
+        .with_column(Column("splag_vdem_v2xcl_rol", from_loa="country_year",
+                            from_column="vdem_v2xcl_rol")
+                    .transform.missing.fill()
+                    .transform.temporal.tlag(12)
+                    .transform.spatial.countrylag(1, 1, 0, 0)
+                    .transform.missing.replace_na()
+                    )
+
+        .with_theme("fatalities")
+        .describe("""Predicting ged_dummy_sb, cm level
+
+                    Queryset with features from various sources, 'joint narrow'
+
+                    """)
+        )
+
+
+    return qs_joint_narrow
