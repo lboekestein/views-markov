@@ -1,12 +1,18 @@
+"""
+A Markov prediction model for forecasting fatalities
+
+Translated from R to Python based on the "new_markov" implementation in the fatalities002 pipeline, with some modifications and extensions.
+Original R code can be found here: https://github.com/prio-data/viewsforecasting/tree/main/Tools/new_markov
+"""
+
 import warnings
+from typing import Union, Dict, List, Optional, Any, Literal
+
 import numpy as np
 import pandas as pd
-
-from typing import Union, Dict, List, Optional, Any, Literal
 from pandas._libs.missing import NAType
-from tqdm import tqdm
-
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from tqdm import tqdm
 
 
 class MarkovStateModel:
