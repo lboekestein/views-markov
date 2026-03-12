@@ -31,6 +31,31 @@ class MarkovModelManager(ForecastingModelManager):
             raise NotImplementedError("PGM level is not yet implemented for MarkovModel.")
         elif self._config_meta["level"] != "cm":
             raise ValueError(f"Invalid level: {self._config_meta['level']}. Expected 'cm' for MarkovModel.")
+        
+
+    @staticmethod
+    def _get_standardized_df(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Standardize the DataFrame based on the run type
+
+        Args:
+            df: The DataFrame to standardize
+
+        Returns:
+            The standardized DataFrame
+        """
+
+        def standardize_value(value):
+            # 1) Replace inf, -inf, nan with 0; 
+            # 2) Replace negative values with 0
+            if isinstance(value, list):
+                return [0 if (v == np.inf or v == -np.inf or v < 0 or np.isnan(v)) else v for v in value]
+            else:
+                return 0 if (value == np.inf or value == -np.inf or value < 0 or np.isnan(value)) else value
+
+        df = df.applymap(standardize_value)
+
+        return df
     
 
     def _get_model(self, partitioner_dict: dict) -> MarkovModel:
@@ -87,13 +112,103 @@ class MarkovModelManager(ForecastingModelManager):
 
         return markov_model
 
+
     def _evaluate_model_artifact(
             self, eval_type: str, artifact_name: str
         ) -> List[pd.DataFrame]:
-        ...
+        """
+        Evaluate the model artifact based on the evaluation type and the artifact name.
+
+        Args:
+            eval_type: The evaluation type
+            artifact_name: The name of the artifact to evaluate
+
+        Returns:
+            A list of DataFrames containing the evaluation results
+        """
+        path_artifacts = self._model_path.artifacts
+        run_type = self.configs["run_type"]
+
+        # if an artifact name is provided through the CLI, use it.
+        # Otherwise, get the latest model artifact based on the run type
+        if artifact_name:
+            logger.info(f"Using (non-default) artifact: {artifact_name}")
+
+            if not artifact_name.endswith(".pkl"):
+                artifact_name += ".pkl"
+            path_artifact = path_artifacts / artifact_name
+        else:
+            # use the latest model artifact based on the run type
+            path_artifact = self._model_path.get_latest_model_artifact_path(run_type)
+            logger.info(
+                f"Using latest (default) run type ({run_type}) specific artifact {path_artifact.name}"
+            )
+
+        self.configs = {"timestamp": path_artifact.stem[-15:]}
+
+        try:
+            with open(path_artifact, "rb") as f:
+                markov_model = pickle.load(f)
+        except FileNotFoundError:
+            logger.exception(f"Model artifact not found at {path_artifact}")
+            raise
+        
+        df_predictions = markov_model.predict(run_type, eval_type)
+        df_predictions = [
+            MarkovModelManager._get_standardized_df(df) for df in df_predictions
+        ]
+        return df_predictions
+
 
     def _forecast_model_artifact(self, artifact_name: str) -> pd.DataFrame:
-        ...
+        """
+        Forecast using the model artifact.
 
-    def _evaluate_sweep(self, eval_type: str, model: Any) -> List[pd.DataFrame]:
-        ...
+        Args:
+            artifact_name: The name of the artifact to use for forecasting
+
+        Returns:
+            The forecasted DataFrame
+        """
+        path_artifacts = self._model_path.artifacts
+        run_type = self.configs["run_type"]
+
+        # if an artifact name is provided through the CLI, use it.
+        # Otherwise, get the latest model artifact based on the run type
+        if artifact_name:
+            logger.info(f"Using (non-default) artifact: {artifact_name}")
+
+            if not artifact_name.endswith(".pkl"):
+                artifact_name += ".pkl"
+            path_artifact = path_artifacts / artifact_name
+        else:
+            # use the latest model artifact based on the run type
+            path_artifact = self._model_path.get_latest_model_artifact_path(run_type)
+            logger.info(
+                f"Using latest (default) run type ({run_type}) specific artifact {path_artifact.name}"
+            )
+            
+        self.configs = {"timestamp": path_artifact.stem[-15:]}
+
+        try:
+            with open(path_artifact, "rb") as f:
+                markov_model = pickle.load(f)
+        except FileNotFoundError:
+            logger.exception(f"Model artifact not found at {path_artifact}")
+            raise
+
+        df_prediction = markov_model.predict(run_type)
+        df_prediction = MarkovModelManager._get_standardized_df(df_prediction)
+
+        return df_prediction
+
+
+    def _evaluate_sweep(self, eval_type: str, model: any) -> List[pd.DataFrame]:
+        run_type = self.configs["run_type"]
+
+        df_predictions = model.predict(run_type, eval_type)
+        df_predictions = [
+            MarkovModelManager._get_standardized_df(df) for df in df_predictions
+        ]
+
+        return df_predictions
