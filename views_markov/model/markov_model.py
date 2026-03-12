@@ -16,6 +16,7 @@ import pickle
 
 from pandas._libs.missing import NAType
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from views_pipeline_core.managers.model import ForecastingModelManager
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
@@ -487,6 +488,7 @@ class MarkovModel:
 
         return self
     
+
     def save(self, path: Union[str, Path]) -> None:
         try:
             with open(path, "wb") as file:
@@ -496,7 +498,60 @@ class MarkovModel:
             logger.exception(f"Failed to save model: {e}")
 
 
-    def predict(
+    def predict(self, run_type: str, eval_type: str = "standard") -> list[pd.DataFrame]:
+        """
+  
+        """
+
+        if run_type != "forecasting":
+
+            if eval_type == "standard":
+
+                total_sequence_number = (
+                    ForecastingModelManager._resolve_evaluation_sequence_number(eval_type)
+                )
+
+                preds = []
+                
+                for sequence_number in tqdm(
+                        range(ForecastingModelManager._resolve_evaluation_sequence_number(eval_type)),
+                        desc="Predicting for sequence number",
+                    ):
+
+                    pred_by_step = [
+                        self._predict_by_step(self._models[step], step, sequence_number)
+                        for step in self._steps
+                    ]
+
+                    pred = pd.concat(pred_by_step, axis=0)
+                    preds.append(pred)
+                    
+            else:
+                raise ValueError(
+                    f"{eval_type} is not supported now. Please use 'standard' evaluation type."
+                )
+            
+        else:
+            
+            preds = []
+            for step in tqdm(self._steps, desc="Predicting for steps"):
+
+                preds.append(self._predict_by_step(self._models[step], step, 0))
+
+            preds = pd.concat(preds, axis=0).sort_index()
+            
+        return preds
+
+
+        # TODO
+        # - must store data of the model during fitting
+        # - must return "sequences" instead of full dataframes
+        # - must return list of sequences
+
+        ...
+
+
+    def _predict_old_wrapper(
             self, 
             data: pd.DataFrame,
         ) -> pd.DataFrame:
