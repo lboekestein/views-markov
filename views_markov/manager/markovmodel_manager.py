@@ -72,7 +72,7 @@ class MarkovModelManager(ForecastingModelManager):
         model = MarkovModel(
             partitioner_dict=partitioner_dict,
             steps = self.config.get("steps", [*range(1, 36 + 1, 1)]),
-            target = self.config.get("targets", ["ln_ged_sb_dep"])[0],
+            targets = self.config.get("targets", ["ln_ged_sb_dep"]),
             markov_target=self.config.get("markov_target", "ln_ged_sb_dep"),
             markov_method=self.config.get("markov_method", "direct"),
             regression_method=self.config.get("regression_method", "single"),

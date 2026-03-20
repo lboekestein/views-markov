@@ -15,9 +15,12 @@ import pandas as pd
 import pickle 
 
 from pandas._libs.missing import NAType
+from sklearn.base import check_is_fitted
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+import torch
 from views_pipeline_core.managers.model import ForecastingModelManager
-from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +61,7 @@ class MarkovStateModel:
         self._markov_states = ["peace", "desc", "esc", "war"]
         self._markov_features: list[str] = []
         self._markov_target: str = ""
-        self._is_fitted = False
+        self.is_fitted_ = False
         self._n_samples: int = 0
 
 
@@ -128,7 +131,7 @@ class MarkovStateModel:
             # store model for current state
             self.models[state] = rf_class
 
-        self._is_fitted = True
+        self.is_fitted_ = True
 
         return self
 
@@ -152,6 +155,7 @@ class MarkovStateModel:
                 The dataframe has a multi-index with levels "country_id" and "month_id", 
                 and columns for the predicted probabilities of each target state given the starting state, named in the format "p_{target}\_c\_{start_state}".
         """
+        check_is_fitted(self, "is_fitted_")
 
         model = self.models[start_state]
 
@@ -201,7 +205,7 @@ class MarkovFatalityModel:
         self._rf_reg_params = rf_reg_params if rf_reg_params is not None else {}
 
         self.models: dict[str, RandomForestRegressor] = {}
-        self._is_fitted = False
+        self.is_fitted_ = False
 
         self._features: list[str] = []
         self._target: str = ""
@@ -266,7 +270,7 @@ class MarkovFatalityModel:
 
             self.models[state] = rf_reg
 
-        self._is_fitted = True
+        self.is_fitted_ = True
 
         return self
 
@@ -287,6 +291,8 @@ class MarkovFatalityModel:
             pd.Series: A series containing the predicted number of fatalities in the target month, given the predicted month's state and features.
                 The series has a multi-index with levels "country_id" and "month_id", and name in the format "predicted_fatalities_c_{start_state}".
         """
+
+        check_is_fitted(self, "is_fitted_")
 
         model = self.models[start_state]
 
@@ -333,7 +339,7 @@ class MarkovModel:
             self, 
             partitioner_dict: dict[str, tuple[int, int]],
             steps: int | list[int] | range,
-            target: str,
+            targets: list[str],
             markov_target: str,
             state_features: Optional[list[str]] = None,
             fatalities_features: Optional[list[str]] = None,
@@ -352,6 +358,17 @@ class MarkovModel:
             partitioner_dict, markov_method, regression_method
         )
 
+        # Multiple targets handling (AKA, don't handle)
+        if not isinstance(targets, list):
+            raise ValueError("Dependent variable must be a list")
+        elif len(targets) > 1:
+            raise ValueError("MarkovModel only supports one dependent variable")
+        else:
+            self._targets = targets[0]
+
+        self._train_start, self._train_end = partitioner_dict["train"]
+        self._test_start, self._test_end = partitioner_dict["test"]
+
         # set model parameters
         self._partitioner_dict = partitioner_dict
         self._steps = self._get_list_of_steps(steps)
@@ -361,7 +378,6 @@ class MarkovModel:
 
         self._state_features = state_features
         self._fatalities_features = fatalities_features
-        self._target = target
         self._markov_target = markov_target
 
         self._random_state = random_state
@@ -379,7 +395,8 @@ class MarkovModel:
 
         # set markov states and index columns
         self._markov_states = ["peace", "desc", "esc", "war"]
-        self._index_columns = ["country_id", "month_id"]
+        
+        #self._index_columns = ["country_id", "month_id"]
 
         # initialize attributes to be set during fitting
 
@@ -387,7 +404,17 @@ class MarkovModel:
         self._state_models: dict[int, MarkovStateModel] = {}
         self._fatality_models: dict[int, MarkovFatalityModel] = {}
         
-        self._is_fitted: bool = False
+        self.is_fitted_: bool = False
+
+
+    @staticmethod
+    def get_device_params():
+        if torch.cuda.is_available():
+            return {"device": "cuda"}
+        elif torch.backends.mps.is_available():
+            return {"device": "mps"}
+        else:
+            return {}
 
 
     def fit(
@@ -405,21 +432,20 @@ class MarkovModel:
         Returns:
             MarkovModel: The fitted MarkovModel instance.
         """
-
         data = data.copy()
-
-        # verify input data
-        self._verify_input_data(data, self._target, self._markov_target, self._state_features, self._fatalities_features)
-
-        # get full list features
-        all_features = data.columns.drop([self._target, self._markov_target]).tolist()
-
+        
+        # get full lists of features
+        all_features = data.columns.drop([self._targets, self._markov_target]).tolist()
         self._markov_features = all_features if self._state_features is None else self._state_features
         self._fatalities_features = all_features if self._fatalities_features is None else self._fatalities_features
 
-        # add markov states to data
-        data = self._add_markov_states(data, self._markov_target)
+        # process and verify data
+        data = self._process_data(data)
+        self._verify_input_data(data, self._targets, self._markov_target, self._state_features, self._fatalities_features)
+        # add markov states to data and store in self._data
+        self._data = self._add_markov_states(data, self._markov_target)     
 
+        
         markov_steps = []
         # if predicting directly, fit markov model for all steps
         if self._markov_method == "direct":
@@ -429,10 +455,10 @@ class MarkovModel:
             markov_steps = [1]
 
         if self._verbose:
-            print(f"Fitting Markov model using {self._markov_method} method and {self._regression_method} regression:")
+            print(f"Fitting Markov Model using {self._markov_method} method and {self._regression_method} regression:")
 
         # fit markov_model for all steps
-        for step in tqdm(
+        for step in tqdm.tqdm(
             markov_steps, 
             desc=f"Fitting Markov State Models ({self._markov_method} method)",
             disable=self._verbose is False
@@ -446,7 +472,7 @@ class MarkovModel:
                 n_jobs = self._n_jobs
             )
             state_model.fit(
-                data=data,
+                data=self._data,
                 markov_column = "markov_state",
                 markov_features = self._markov_features
             )
@@ -460,7 +486,7 @@ class MarkovModel:
         elif self._regression_method == "multi":
             regression_steps = self._steps
 
-        for step in tqdm(
+        for step in tqdm.tqdm(
             regression_steps, 
             desc=f"Fitting Fatality Models ({self._regression_method} method)",
             disable=self._verbose is False
@@ -474,8 +500,8 @@ class MarkovModel:
                 n_jobs = self._n_jobs
             )
             fatality_model.fit(
-                data=data,
-                target_column = self._target,
+                data=self._data,
+                target_column = self._targets,
                 features = self._fatalities_features
             )
             self._fatality_models[step] = fatality_model
@@ -484,7 +510,7 @@ class MarkovModel:
             print("Finished fitting Markov model.", flush=True)
 
         # set fitted flag
-        self._is_fitted = True
+        self.is_fitted_ = True
 
         return self
     
@@ -503,109 +529,94 @@ class MarkovModel:
   
         """
 
+        # check if model has been fitted
+        check_is_fitted(self, "is_fitted_")
+        # check if model has been trained for given steps
+        # TODO this might be absolute, could be removed
+        self._check_if_steps_trained(self._steps)
+
         if run_type != "forecasting":
 
             if eval_type == "standard":
-
                 total_sequence_number = (
                     ForecastingModelManager._resolve_evaluation_sequence_number(eval_type)
-                )
+                ) # this is 12 by default
 
-                preds = []
-                
-                for sequence_number in tqdm(
+                if self.get_device_params().get("device") == "cuda":
+                    preds = []
+                    for sequence_number in tqdm.tqdm(
                         range(ForecastingModelManager._resolve_evaluation_sequence_number(eval_type)),
                         desc="Predicting for sequence number",
                     ):
+                        pred_by_step = [
+                            self._predict_by_step(step, sequence_number)
+                            for step in self._steps
+                        ]
+                        pred = pd.concat(pred_by_step, axis=0)
+                        preds.append(pred)
+                else:
+                    preds = [None] * total_sequence_number
+                    with ProcessPoolExecutor() as executor:
+                        futures = {
+                            executor.submit(
+                                self._predict_by_sequence, sequence_number
+                            ): sequence_number
+                            for sequence_number in range(total_sequence_number)
+                        }
 
-                    pred_by_step = [
-                        self._predict_by_step(self._models[step], step, sequence_number)
-                        for step in self._steps
-                    ]
-
-                    pred = pd.concat(pred_by_step, axis=0)
-                    preds.append(pred)
-                    
+                        for future in tqdm.tqdm(
+                            as_completed(futures.keys()),
+                            desc="Predicting for sequence number",
+                            total=len(futures),
+                        ):
+                            sequence_number = futures[future]
+                            preds[sequence_number] = future.result()
             else:
                 raise ValueError(
                     f"{eval_type} is not supported now. Please use 'standard' evaluation type."
                 )
-            
+
         else:
-            
-            preds = []
-            for step in tqdm(self._steps, desc="Predicting for steps"):
 
-                preds.append(self._predict_by_step(self._models[step], step, 0))
+            if self.get_device_params().get("device") == "cuda":
+                preds = []
+                for step in tqdm.tqdm(self._steps, desc="Predicting for steps"):
+                    preds.append(self._predict_by_step(step, 0))
+                preds = pd.concat(preds, axis=0).sort_index()
+                
+            else:
+                with ProcessPoolExecutor() as executor:
+                    futures = {
+                        step: executor.submit(
+                            self._predict_by_step, step, 0
+                        )
+                        for step in self._steps
+                    }
+                    preds_by_step = [
+                        future.result()
+                        for future in tqdm.tqdm(
+                            as_completed(futures.values()),
+                            desc="Predicting outcomes",
+                            total=len(futures),
+                        )
+                    ]
 
-            preds = pd.concat(preds, axis=0).sort_index()
-            
+                preds = pd.concat(preds_by_step, axis=0).sort_index()
+
         return preds
 
-
-        # TODO
-        # - must store data of the model during fitting
-        # - must return "sequences" instead of full dataframes
-        # - must return list of sequences
-
-        ...
-
-
-    def _predict_old_wrapper(
-            self, 
-            data: pd.DataFrame,
-        ) -> pd.DataFrame:
-        """
-        Predict the target variable for the given dataset and steps.
-        Data must contain the target column and feature columns, and have a multi-index with levels country_id and month_id.
-
-        Args:
-            data (pd.DataFrame): The dataset for prediction.
-            steps (int | list[int] | range): Steps ahead to predict.
-            verbose (bool, optional): Whether to print progress messages. Defaults to True.
-        """
-
-        data = data.copy()
-
-        if not self._is_fitted:
-            raise ValueError("Model is not yet fitted. Cannot predict")
-
-        # check if model has been trained for given steps
-        self._check_if_steps_trained(self._steps)
-
-        # add markov states to data
-        data = self._add_markov_states(data, target=self._markov_target)
-
-        # predict for all given steps
-        predictions: dict[int, pd.DataFrame] = {}
-        for step in tqdm(self._steps, desc="Predicting steps", disable=self._verbose is False):
+    def _predict_by_sequence(self, sequence_number):
+        pred_by_step = []
+        for step in self._steps:
+            pred = self._predict_by_step(step, sequence_number)
+            pred_by_step.append(pred)
+        return pd.concat(pred_by_step, axis=0).sort_index()
         
-            prediction_step = self._predict_step(
-                data,
-                step
-            )
-            predictions[step] = prediction_step
 
-        combined_predictions = pd.concat(predictions.values(), axis=0)
-
-        # pivot to wide format
-        combined_predictions = (
-            combined_predictions
-            .reset_index()
-            .pivot(index=["country_id", "target_month_id"], columns="step", values="predicted_fatalities")
-            .rename(columns=lambda x: f"predicted_fatalities_t_min_{x}")
-        )
-
-        if self._verbose:
-            print("Finished predicting for all steps.", flush=True)
-
-        return combined_predictions
-    
-
-    def _predict_step(
+    def _predict_by_step(
             self,
-            data: pd.DataFrame,
             step: int,
+            sequence_number: int,
         ) -> pd.DataFrame:
         """
         Predict the target variable for a given test dataset and step´
@@ -619,21 +630,23 @@ class MarkovModel:
         """
 
         ### 1) Data preprocessing
-        data = data.copy()
+        data = self._data.copy()
 
         # add target_month_id column
-        data = data.reset_index()
-        data["target_month_id"] = data.groupby("country_id")["month_id"].shift(-step)
-        data.set_index(["country_id", "month_id"], inplace=True)
+        data["target_month_id"] = data.index.get_level_values(self._time) + step
 
-        # filter data to test period
-        self._test_start, self._test_end = self._partitioner_dict["test"]
-        test_data = data.loc[
-            data["target_month_id"].isin(
-                range(self._test_start, self._test_end + 1))
-        ].dropna()
+        # # filter data to test period
+        # self._test_start, self._test_end = self._partitioner_dict["test"]
 
-    
+        # test_data = data.loc[
+        #     data["target_month_id"].isin(
+        #         range(self._test_start, self._test_end + 1))
+        # ].dropna()
+
+        # slice just last "start_month_id" row based on sequence number and step
+        start_month_id = self._test_start + sequence_number - 1
+        test_data = data.loc[data.index.get_level_values(self._time) == start_month_id]
+
         ### 2) Predict probability of Markov states in target month
 
         # retrieve models for given step
@@ -698,9 +711,10 @@ class MarkovModel:
         ###    compute weighted fatalities in target month
 
         # compute weighted fatalities
-        test_data_full["predicted_fatalities"] = test_data_full.apply(self._get_weighted_fatalities, axis=1)
+        test_data_full[f"pred_{self._targets}"] = test_data_full.apply(self._get_weighted_fatalities, axis=1)
+        
         # add step as column
-        test_data_full["step"] = step
+        #test_data_full["step"] = step
 
         # drop rows where target_month_id is NA (due to shifting)
         test_data_full = test_data_full.dropna(subset=["target_month_id"])
@@ -709,8 +723,9 @@ class MarkovModel:
         test_data_full = (
             test_data_full
             .reset_index()
-            .set_index(["country_id", "target_month_id"])
-            [["predicted_fatalities", "step"]]
+            .set_index(["target_month_id", self._level])
+            .rename_axis(index={"target_month_id": "month_id"})
+            [[f"pred_{self._targets}"]]
         )
 
         return test_data_full
@@ -754,6 +769,40 @@ class MarkovModel:
         self._rf_reg_params = default_rf_reg_params
 
 
+    def _process_data(self, df: pd.DataFrame):
+        """
+        Countries appear and disappear, so we are predicting countries that exist in the last month of the training data.
+        If the country appeared earlier but don't have data previously, we will fill the missing data with 0.
+        """
+
+        # set up
+        self._time = df.index.names[0]
+        self._level: Level = df.index.names[1]
+
+        #self._independent_variables = [c for c in df.columns if c != self._targets]
+
+        last_month_id = df.index.get_level_values(self._time).max()
+        existing_country_ids = df.loc[last_month_id].index.unique()
+        df = df[df.index.get_level_values(self._level).isin(existing_country_ids)]
+
+        all_months = df.index.get_level_values(self._time).unique()
+        all_combinations = pd.MultiIndex.from_product(
+            [all_months, existing_country_ids], names=[self._time, self._level]
+        )
+        missing_combinations = all_combinations.difference(df.index)
+
+        missing_df = pd.DataFrame(0, index=missing_combinations, columns=df.columns)
+        df = pd.concat([df, missing_df]).sort_index()
+
+        # TODO
+        # This is currently been removed, since the target variable is often already log-transformed
+        # ---------------
+        # df[self._targets] = np.log1p(df[self._targets]) # Calculates log(1 + x).
+        # ---------------
+
+        return df
+
+
     def _verify_input_data(
             self,
             data: pd.DataFrame,
@@ -776,8 +825,16 @@ class MarkovModel:
         """
 
         # verify index contains required levels
-        if not all(col in data.index.names for col in self._index_columns):
-            raise ValueError(f"Data index must contain the following levels: {self._index_columns}. Current index levels are: {data.index.names}")
+        if not self._time == "month_id" or not self._level == "country_id":
+            if self._level == "pg_id":
+                warnings.warn(
+                    "Markov Modelling is designed for country-level data. Please be careful interpreting results for PRIO-Grid level.",
+                    UserWarning
+                )
+            warnings.warn(
+                f"Data index is usually 'month_id' and 'country_id'. Current index levels are: {data.index.names}",
+                UserWarning
+            )
 
         # verify target column exists
         if target not in data.columns:
@@ -946,10 +1003,10 @@ class MarkovModel:
             pd.DataFrame: Data with an additional 'markov_state' column.
         """
 
-        data = data.sort_index(level=["country_id", "month_id"])  # sort by country_id, month_id
+        data = data.sort_index(level=[self._level, self._time])  # sort by country_id, month_id
 
         # compute temporary t-1 of target
-        data[f"{target}_t_min_1"] = data.groupby(level="country_id")[target].shift(1)
+        data[f"{target}_t_min_1"] = data.groupby(level=self._level)[target].shift(1)
 
         # compute markov states
         data["markov_state"] = data.apply(
