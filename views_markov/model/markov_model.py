@@ -375,7 +375,7 @@ class MarkovModel:
             markov_target (str): Name of the target column to compute Markov states from (should represent number of fatalities).
             state_features (Optional[list[str]], optional): List of feature column names to use for predicting Markov states.
             fatalities_features (Optional[list[str]], optional): List of feature column names to use for predicting fatalities.
-            verbose (bool, optional): Whether to print progress messages. Defaults to True.
+            verbose (bool, optional): Whether to log progress messages. Defaults to True.
             markov_method (str, optional): Markov method to use. Options are "direct" or "transition". 
                 When "direct", the model predicts the markov state of the target month directly for any step size.
                 When "transition", the model computes the transition matrix between states and uses it to forecast multiple steps ahead.
@@ -494,9 +494,8 @@ class MarkovModel:
         else:
             raise ValueError(f"Invalid markov_method: {self._markov_method}. Expected 'direct' or 'transition'.")
 
-        # TODO this should probably be a logging statement rather than print
-        if self._verbose:
-            print(f"Fitting Markov Model using {self._markov_method} method and {self._regression_method} regression:")
+    
+        logger.info(f"Fitting Markov Model using {self._markov_method} method and {self._regression_method} regression:")
 
         # fit markov_model for all steps
         for step in tqdm.tqdm(
@@ -558,9 +557,7 @@ class MarkovModel:
             # store model in self._fatality_models with key corresponding to step
             self._fatality_models[step] = fatality_model
 
-        # TODO this should probably be a logging statement rather than print
-        if self._verbose:
-            print("Finished fitting Markov model.", flush=True)
+        logger.info("Finished fitting Markov model.")
 
         self.is_fitted_ = True
 
@@ -716,14 +713,6 @@ class MarkovModel:
         # add target_time_id column
         data["target_time_id"] = data.index.get_level_values(self._time) + step
 
-        # # filter data to test period
-        # self._test_start, self._test_end = self._partitioner_dict["test"]
-
-        # test_data = data.loc[
-        #     data["target_month_id"].isin(
-        #         range(self._test_start, self._test_end + 1))
-        # ].dropna()
-
         # slice just last "start_month_id" row based on sequence number and step
         start_month_id = self._test_start + sequence_number - 1
         test_data = data.loc[data.index.get_level_values(self._time) == start_month_id]
@@ -866,8 +855,6 @@ class MarkovModel:
         self._time = df.index.names[0]
         self._level = df.index.names[1]
 
-        #self._independent_variables = [c for c in df.columns if c != self._targets]
-
         last_month_id = df.index.get_level_values(self._time).max()
         existing_country_ids = df.loc[last_month_id].index.unique()
         df = df[df.index.get_level_values(self._level).isin(existing_country_ids)]
@@ -881,11 +868,7 @@ class MarkovModel:
         missing_df = pd.DataFrame(0, index=missing_combinations, columns=df.columns)
         df = pd.concat([df, missing_df]).sort_index()
 
-        # TODO
-        # This is currently been removed, since the target variable is often already log-transformed
-        # ---------------
-        # df[self._targets] = np.log1p(df[self._targets]) # Calculates log(1 + x).
-        # ---------------
+        df[self._targets] = np.log1p(df[self._targets]) # Calculates log(1 + x).
 
         return df
 
